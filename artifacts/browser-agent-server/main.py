@@ -201,7 +201,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             browser_session=browser_session,
             register_new_step_callback=on_step,
             use_vision=True,
-            max_failures=3,
+            max_failures=5,
         )
 
         await queue.put({
@@ -210,7 +210,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             "timestamp": datetime.now().isoformat(),
         })
 
-        history = await agent.run(max_steps=20)
+        history = await agent.run(max_steps=100)
 
         result_text = None
         try:
