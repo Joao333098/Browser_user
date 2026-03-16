@@ -2,9 +2,6 @@ import asyncio
 import base64
 import json
 import os
-import shutil
-import subprocess
-import tempfile
 import uuid
 from datetime import datetime
 
@@ -14,19 +11,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-AGENT_BROWSER = shutil.which("agent-browser") or "agent-browser"
-CHROMIUM = (
-    shutil.which("chromium")
-    or shutil.which("chromium-browser")
+CHROMIUM_PATH = (
+    os.environ.get("CHROMIUM_PATH")
     or "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium"
 )
 
 NOVA_BASE_URL = "https://api.nova.amazon.com/v1"
 
-SYSTEM_PROMPT = """You are a browser automation agent. You control a real web browser using a CLI tool.
+SYSTEM_PROMPT = """You are a browser automation agent. You control a real web browser using Playwright.
 
 At each step you receive:
-1. SNAPSHOT: the accessibility tree of the current page (elements with @ref IDs you can interact with)
+1. SNAPSHOT: the accessibility tree of the current page
 2. SCREENSHOT: a base64 PNG of what the browser currently shows
 
 You must respond with ONLY a JSON object (no markdown, no code fences) in exactly this format:
@@ -38,24 +33,23 @@ You must respond with ONLY a JSON object (no markdown, no code fences) in exactl
 }
 
 Available commands and args:
-- navigate [url]         — go to a URL
-- click [@ref or css]    — click an element
-- fill [@ref or css, text] — clear and type text into input
-- type [@ref or css, text] — type text without clearing
-- press [key]            — press a keyboard key (Enter, Tab, Escape, etc)
-- scroll [direction]     — scroll the page (up/down/left/right)
-- wait [ms]              — wait milliseconds (use "2000" to wait 2 seconds)
-- wait_text [text]       — wait for text to appear on page
-- eval [js]              — run JavaScript in the browser console
-- snapshot               — get fresh accessibility tree (no args)
-- screenshot             — take a screenshot (no args)
-- done [result]          — finish task with this result message
-- fail [reason]          — stop if task is impossible
+- navigate [url]              — go to a URL
+- click [selector]            — click an element by CSS selector or text
+- fill [selector, text]       — clear and type text into input
+- type [selector, text]       — type text without clearing
+- press [key]                 — press a keyboard key (Enter, Tab, Escape, ArrowDown, etc)
+- scroll [direction]          — scroll the page (up/down/left/right)
+- wait [ms]                   — wait milliseconds (e.g. "2000" to wait 2 seconds)
+- wait_text [text]            — wait for text to appear on page
+- eval [js]                   — run JavaScript in the browser console
+- snapshot                    — get fresh accessibility tree (no args)
+- screenshot                  — take a screenshot (no args)
+- done [result]               — finish task with this result message
+- fail [reason]               — stop if task is impossible
 
 Rules:
-- Always use @ref from the snapshot when possible (e.g. @e5) — more reliable than CSS
-- If a video needs to be skipped, use eval with JavaScript to skip it
-- If you don't know an answer to a quiz, reason carefully or search the web first
+- Use specific CSS selectors (e.g. input[name="q"], button[type="submit"]) when possible
+- For text-based clicks use: text=Button Label
 - Keep thought brief, description clear and human-friendly
 - ONLY output valid JSON — no extra text"""
 
@@ -141,22 +135,6 @@ async def stream_task(task_id: str):
     )
 
 
-async def _ab(task_id: str, cdp_port: int, *args: str, timeout: int = 15) -> str:
-    """Run an agent-browser command connected to Chromium via CDP, isolated by session."""
-    cmd = [AGENT_BROWSER, "--cdp", str(cdp_port), "--session", task_id] + list(args)
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        return stdout.decode(errors="replace").strip()
-    except asyncio.TimeoutError:
-        proc.kill()
-        return ""
-
-
 async def _ask_nova(api_key: str, model: str, messages: list, retries: int = 5) -> str:
     """Call Nova API with automatic retry on 429 rate-limit errors."""
     import urllib.request
@@ -197,12 +175,11 @@ async def _ask_nova(api_key: str, model: str, messages: list, retries: int = 5) 
 
         code, body_text = err
         if code == 429:
-            # Try to extract wait time from response
             wait = 20
             try:
+                import re
                 err_json = json.loads(body_text)
                 msg = err_json.get("message", "")
-                import re
                 m = re.search(r"(\d+)\s*second", msg)
                 if m:
                     wait = int(m.group(1)) + 2
@@ -225,7 +202,6 @@ def _parse_action(text: str) -> dict | None:
         text = text[idx + 1:].strip() if idx >= 0 else text
         if text.endswith("```"):
             text = text[:-3].strip()
-    # try to extract first { ... } block
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1:
@@ -236,27 +212,47 @@ def _parse_action(text: str) -> dict | None:
         return None
 
 
+def _accessibility_to_text(node: dict | None, indent: int = 0) -> str:
+    """Convert Playwright accessibility snapshot to readable text."""
+    if not node:
+        return ""
+    lines = []
+    role = node.get("role", "")
+    name = node.get("name", "")
+    value = node.get("value", "")
+    prefix = "  " * indent
+    label = f"{role}"
+    if name:
+        label += f' "{name}"'
+    if value:
+        label += f' value="{value}"'
+    lines.append(f"{prefix}{label}")
+    for child in node.get("children", []):
+        lines.append(_accessibility_to_text(child, indent + 1))
+    return "\n".join(lines)
+
+
 async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: asyncio.Queue):
-    chromium_proc = None
-    cdp_port = 9300 + int(task_id[:4], 16) % 600  # deterministic port per task
+    from playwright.async_api import async_playwright
+
+    playwright_ctx = None
+    browser = None
 
     try:
-        # ── Start Chromium with CDP ──────────────────────────────────────────
-        chromium_proc = await asyncio.create_subprocess_exec(
-            CHROMIUM,
-            "--headless",
-            "--no-sandbox",
-            "--disable-gpu",
-            "--disable-dev-shm-usage",
-            f"--remote-debugging-port={cdp_port}",
-            "--window-size=1280,720",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+        playwright_ctx = await async_playwright().start()
+        browser = await playwright_ctx.chromium.launch(
+            executable_path=CHROMIUM_PATH,
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--disable-setuid-sandbox",
+                "--window-size=1280,720",
+            ],
         )
-        await asyncio.sleep(2)  # give Chromium time to start
-
-        # ── Connect agent-browser ────────────────────────────────────────────
-        connect_out = await _ab(task_id, cdp_port, "connect", str(cdp_port), timeout=10)
+        context = await browser.new_context(viewport={"width": 1280, "height": 720})
+        page = await context.new_page()
 
         await queue.put({
             "type": "started",
@@ -264,7 +260,6 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             "timestamp": datetime.now().isoformat(),
         })
 
-        # ── Conversation history ─────────────────────────────────────────────
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"Complete this task: {task}"},
@@ -272,30 +267,32 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
 
         step = 0
         max_steps = 100
-        screenshot_dir = tempfile.mkdtemp()
 
         while step < max_steps:
             step += 1
 
-            # ── Get snapshot ─────────────────────────────────────────────────
-            snapshot = await _ab(task_id, cdp_port, "snapshot", timeout=15)
-            current_url = await _ab(task_id, cdp_port, "get", "url", timeout=5)
+            # Get current URL
+            current_url = page.url
 
-            # ── Get screenshot (always, for live display) ─────────────────────
-            screenshot_path = os.path.join(screenshot_dir, f"step_{step}.png")
-            await _ab(task_id, cdp_port, "screenshot", screenshot_path, timeout=15)
+            # Get accessibility snapshot
+            try:
+                ax_tree = await page.accessibility.snapshot()
+                snapshot = _accessibility_to_text(ax_tree)[:5000]
+            except Exception:
+                snapshot = "(could not get accessibility tree)"
+
+            # Take screenshot
             screenshot_b64 = None
             try:
-                if os.path.exists(screenshot_path):
-                    with open(screenshot_path, "rb") as f:
-                        screenshot_b64 = base64.b64encode(f.read()).decode()
+                screenshot_bytes = await page.screenshot(type="png")
+                screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
             except Exception:
                 pass
 
-            # ── Build LLM message (image only every 3 steps to save tokens) ──
+            # Build LLM message (include image every 3 steps)
             include_image = screenshot_b64 and (step % 3 == 1 or step == 1)
             user_content: list = [
-                {"type": "text", "text": f"Step {step}\nURL: {current_url}\n\nSNAPSHOT:\n{snapshot[:5000]}"}
+                {"type": "text", "text": f"Step {step}\nURL: {current_url}\n\nSNAPSHOT:\n{snapshot}"}
             ]
             if include_image:
                 user_content.append({
@@ -305,19 +302,18 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
 
             messages.append({"role": "user", "content": user_content})
 
-            # ── Trim history: keep system + first user + last 12 messages ─────
+            # Trim history: keep system + first user + last 12 messages
             if len(messages) > 15:
                 messages = messages[:2] + messages[-12:]
 
-            # ── Ask LLM ──────────────────────────────────────────────────────
+            # Ask LLM
             try:
                 raw_response = await _ask_nova(api_key, model, messages)
             except Exception as e:
-                err_str = str(e)
                 await queue.put({
                     "type": "step",
                     "step": step,
-                    "thought": f"Erro LLM: {err_str}",
+                    "thought": f"Erro LLM: {e}",
                     "action": "Falha permanente",
                     "url": current_url,
                     "screenshot": screenshot_b64,
@@ -345,7 +341,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             args = parsed.get("args", [])
             description = parsed.get("description", action)
 
-            # ── Emit step event ───────────────────────────────────────────────
+            # Emit step event
             await queue.put({
                 "type": "step",
                 "step": step,
@@ -356,75 +352,93 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                 "timestamp": datetime.now().isoformat(),
             })
 
-            # ── Execute action ────────────────────────────────────────────────
-            if action == "done":
-                result = args[0] if args else "Tarefa concluída."
-                tasks[task_id]["status"] = "completed"
-                tasks[task_id]["result"] = result
+            # Execute action using Playwright
+            try:
+                if action == "done":
+                    result = args[0] if args else "Tarefa concluída."
+                    tasks[task_id]["status"] = "completed"
+                    tasks[task_id]["result"] = result
+                    await queue.put({
+                        "type": "done",
+                        "result": result,
+                        "steps": step,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    return
+
+                elif action == "fail":
+                    reason = args[0] if args else "Tarefa impossível."
+                    raise Exception(reason)
+
+                elif action == "navigate":
+                    url = args[0] if args else ""
+                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+                elif action == "click":
+                    sel = args[0] if args else ""
+                    await page.click(sel, timeout=10000)
+                    await asyncio.sleep(0.5)
+
+                elif action == "fill":
+                    sel = args[0] if args else ""
+                    text = args[1] if len(args) > 1 else ""
+                    await page.fill(sel, text, timeout=10000)
+                    await asyncio.sleep(0.3)
+
+                elif action == "type":
+                    sel = args[0] if args else ""
+                    text = args[1] if len(args) > 1 else ""
+                    await page.type(sel, text, timeout=10000)
+                    await asyncio.sleep(0.3)
+
+                elif action == "press":
+                    key = args[0] if args else "Enter"
+                    await page.keyboard.press(key)
+                    await asyncio.sleep(0.3)
+
+                elif action == "scroll":
+                    direction = args[0] if args else "down"
+                    scroll_map = {
+                        "down": (0, 500),
+                        "up": (0, -500),
+                        "right": (500, 0),
+                        "left": (-500, 0),
+                    }
+                    dx, dy = scroll_map.get(direction, (0, 500))
+                    await page.evaluate(f"window.scrollBy({dx}, {dy})")
+
+                elif action == "wait":
+                    ms = int(args[0]) if args else 1000
+                    await asyncio.sleep(ms / 1000)
+
+                elif action == "wait_text":
+                    text = args[0] if args else ""
+                    await page.wait_for_selector(f"text={text}", timeout=30000)
+
+                elif action == "eval":
+                    js = args[0] if args else ""
+                    await page.evaluate(js)
+                    await asyncio.sleep(0.5)
+
+                elif action in ("snapshot", "screenshot"):
+                    pass  # already done at top of loop
+
+                else:
+                    pass  # Unknown action — continue
+
+            except Exception as action_err:
+                # Log action error but keep going
                 await queue.put({
-                    "type": "done",
-                    "result": result,
-                    "steps": step,
+                    "type": "step",
+                    "step": step,
+                    "thought": f"Erro ao executar '{action}': {action_err}",
+                    "action": None,
+                    "url": current_url,
+                    "screenshot": screenshot_b64,
                     "timestamp": datetime.now().isoformat(),
                 })
-                return
 
-            elif action == "fail":
-                reason = args[0] if args else "Tarefa impossível."
-                raise Exception(reason)
-
-            elif action == "navigate":
-                url = args[0] if args else ""
-                await _ab(task_id, cdp_port, "open", url, timeout=20)
-                await asyncio.sleep(1)
-
-            elif action == "click":
-                sel = args[0] if args else ""
-                await _ab(task_id, cdp_port, "click", sel, timeout=10)
-                await asyncio.sleep(0.5)
-
-            elif action == "fill":
-                sel = args[0] if args else ""
-                text = args[1] if len(args) > 1 else ""
-                await _ab(task_id, cdp_port, "fill", sel, text, timeout=10)
-                await asyncio.sleep(0.3)
-
-            elif action == "type":
-                sel = args[0] if args else ""
-                text = args[1] if len(args) > 1 else ""
-                await _ab(task_id, cdp_port, "type", sel, text, timeout=10)
-                await asyncio.sleep(0.3)
-
-            elif action == "press":
-                key = args[0] if args else "Enter"
-                await _ab(task_id, cdp_port, "press", key, timeout=10)
-                await asyncio.sleep(0.3)
-
-            elif action == "scroll":
-                direction = args[0] if args else "down"
-                await _ab(task_id, cdp_port, "scroll", direction, timeout=10)
-
-            elif action == "wait":
-                ms = args[0] if args else "1000"
-                await _ab(task_id, cdp_port, "wait", str(ms), timeout=int(ms) // 1000 + 10)
-
-            elif action == "wait_text":
-                text = args[0] if args else ""
-                await _ab(task_id, cdp_port, "wait", "--text", text, timeout=30)
-
-            elif action == "eval":
-                js = args[0] if args else ""
-                await _ab(task_id, cdp_port, "eval", js, timeout=15)
-                await asyncio.sleep(0.5)
-
-            elif action in ("snapshot", "screenshot"):
-                pass  # already done at top of loop
-
-            else:
-                # Unknown action — just continue to next step
-                pass
-
-        # ── Max steps reached ─────────────────────────────────────────────────
+        # Max steps reached
         tasks[task_id]["status"] = "completed"
         tasks[task_id]["result"] = "Limite de passos atingido."
         await queue.put({
@@ -444,17 +458,16 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             "timestamp": datetime.now().isoformat(),
         })
     finally:
-        # ── Close agent-browser + Chromium ────────────────────────────────────
         try:
-            await _ab(task_id, cdp_port, "close", timeout=5)
+            if browser:
+                await browser.close()
         except Exception:
             pass
-        if chromium_proc:
-            try:
-                chromium_proc.kill()
-                await chromium_proc.wait()
-            except Exception:
-                pass
+        try:
+            if playwright_ctx:
+                await playwright_ctx.stop()
+        except Exception:
+            pass
         await queue.put(None)
 
 
