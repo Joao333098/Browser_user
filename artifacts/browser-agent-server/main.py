@@ -157,34 +157,64 @@ async def _ab(task_id: str, cdp_port: int, *args: str, timeout: int = 15) -> str
         return ""
 
 
-async def _ask_nova(api_key: str, model: str, messages: list) -> str:
-    """Call Nova API and return the text response."""
+async def _ask_nova(api_key: str, model: str, messages: list, retries: int = 5) -> str:
+    """Call Nova API with automatic retry on 429 rate-limit errors."""
     import urllib.request
+    import urllib.error
 
     body = json.dumps({
         "model": model,
         "messages": messages,
-        "max_tokens": 1024,
+        "max_tokens": 512,
         "temperature": 0.2,
     }).encode()
 
-    req = urllib.request.Request(
-        f"{NOVA_BASE_URL}/chat/completions",
-        data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
     loop = asyncio.get_event_loop()
 
-    def _do_request():
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return json.loads(resp.read())
+    for attempt in range(retries):
+        req = urllib.request.Request(
+            f"{NOVA_BASE_URL}/chat/completions",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
 
-    data = await loop.run_in_executor(None, _do_request)
-    return data["choices"][0]["message"]["content"]
+        def _do_request():
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    return json.loads(resp.read()), None
+            except urllib.error.HTTPError as e:
+                body_bytes = e.read()
+                return None, (e.code, body_bytes.decode(errors="replace"))
+
+        data, err = await loop.run_in_executor(None, _do_request)
+
+        if err is None:
+            return data["choices"][0]["message"]["content"]
+
+        code, body_text = err
+        if code == 429:
+            # Try to extract wait time from response
+            wait = 20
+            try:
+                err_json = json.loads(body_text)
+                msg = err_json.get("message", "")
+                import re
+                m = re.search(r"(\d+)\s*second", msg)
+                if m:
+                    wait = int(m.group(1)) + 2
+            except Exception:
+                pass
+            wait = min(wait * (attempt + 1), 60)
+            await asyncio.sleep(wait)
+            continue
+
+        raise Exception(f"HTTP Error {code}: {body_text[:200]}")
+
+    raise Exception("Rate limit: maximum retries exceeded")
 
 
 def _parse_action(text: str) -> dict | None:
@@ -251,7 +281,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             snapshot = await _ab(task_id, cdp_port, "snapshot", timeout=15)
             current_url = await _ab(task_id, cdp_port, "get", "url", timeout=5)
 
-            # ── Get screenshot ───────────────────────────────────────────────
+            # ── Get screenshot (always, for live display) ─────────────────────
             screenshot_path = os.path.join(screenshot_dir, f"step_{step}.png")
             await _ab(task_id, cdp_port, "screenshot", screenshot_path, timeout=15)
             screenshot_b64 = None
@@ -262,11 +292,12 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             except Exception:
                 pass
 
-            # ── Build LLM message ────────────────────────────────────────────
+            # ── Build LLM message (image only every 3 steps to save tokens) ──
+            include_image = screenshot_b64 and (step % 3 == 1 or step == 1)
             user_content: list = [
-                {"type": "text", "text": f"Step {step}\nURL: {current_url}\n\nSNAPSHOT:\n{snapshot[:6000]}"}
+                {"type": "text", "text": f"Step {step}\nURL: {current_url}\n\nSNAPSHOT:\n{snapshot[:5000]}"}
             ]
-            if screenshot_b64:
+            if include_image:
                 user_content.append({
                     "type": "image_url",
                     "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"},
@@ -274,25 +305,25 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
 
             messages.append({"role": "user", "content": user_content})
 
+            # ── Trim history: keep system + first user + last 12 messages ─────
+            if len(messages) > 15:
+                messages = messages[:2] + messages[-12:]
+
             # ── Ask LLM ──────────────────────────────────────────────────────
             try:
                 raw_response = await _ask_nova(api_key, model, messages)
             except Exception as e:
-                await asyncio.sleep(5)
-                try:
-                    raw_response = await _ask_nova(api_key, model, messages)
-                except Exception as e2:
-                    await queue.put({
-                        "type": "step",
-                        "step": step,
-                        "thought": f"LLM error: {e2}",
-                        "action": "Aguardando...",
-                        "url": current_url,
-                        "screenshot": screenshot_b64,
-                        "timestamp": datetime.now().isoformat(),
-                    })
-                    await asyncio.sleep(10)
-                    continue
+                err_str = str(e)
+                await queue.put({
+                    "type": "step",
+                    "step": step,
+                    "thought": f"Erro LLM: {err_str}",
+                    "action": "Falha permanente",
+                    "url": current_url,
+                    "screenshot": screenshot_b64,
+                    "timestamp": datetime.now().isoformat(),
+                })
+                break
 
             messages.append({"role": "assistant", "content": raw_response})
 
