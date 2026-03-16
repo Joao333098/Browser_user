@@ -48,4 +48,28 @@ timeoutMs = 20000
 
 [nix]
 channel = "stable-25_05"
-packages = ["gitFull", "playwright-driver"]
+packages = ["gitFull", "playwright-driver", "glib", "nss", "nspr", "atk", "at-spi2-atk", "xorg.libX11", "xorg.libxcb", "xorg.libXcomposite", "xorg.libXdamage", "xorg.libXext", "xorg.libXfixes", "xorg.libXrandr", "xorg.libXrender", "cups", "dbus", "expat", "fontconfig", "freetype", "pango", "gtk3", "alsa-lib", "libdrm", "mesa", "chromium"]
+
+[[ports]]
+localPort = 8000
+externalPort = 8000
+
+[[ports]]
+localPort = 8080
+externalPort = 80
+
+[[ports]]
+localPort = 8081
+externalPort = 8081
+
+[[ports]]
+localPort = 8082
+externalPort = 3002
+
+[[ports]]
+localPort = 23842
+externalPort = 3001
+
+[[ports]]
+localPort = 23843
+externalPort = 3000

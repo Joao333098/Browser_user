@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import os
+import shutil
 import uuid
 from datetime import datetime
 from typing import Any
@@ -13,6 +14,33 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from browser_use import Agent, BrowserProfile, BrowserSession, ChatOpenAI
+from browser_use.llm.openai.chat import ChatInvokeCompletion
+
+
+def _strip_code_fences(content: str) -> str:
+    content = content.strip()
+    if content.startswith("```"):
+        idx = content.find("\n")
+        content = content[idx + 1 :].strip() if idx >= 0 else content
+        if content.endswith("```"):
+            content = content[:-3].strip()
+    return content
+
+
+class NovaChatOpenAI(ChatOpenAI):
+    async def ainvoke(self, messages, output_format=None, **kwargs):
+        raw = await super().ainvoke(messages, output_format=None, **kwargs)
+        if output_format is not None:
+            content = raw.completion if isinstance(raw.completion, str) else ""
+            content = _strip_code_fences(content)
+            parsed = output_format.model_validate_json(content)
+            return ChatInvokeCompletion(
+                completion=parsed,
+                usage=raw.usage,
+                stop_reason=raw.stop_reason,
+            )
+        return raw
+
 
 app = FastAPI(title="Browser Agent Server")
 
@@ -101,13 +129,20 @@ async def stream_task(task_id: str):
 async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: asyncio.Queue):
     browser_session = None
     try:
-        llm = ChatOpenAI(
+        llm = NovaChatOpenAI(
             model=model,
             api_key=api_key,
             base_url="https://api.nova.amazon.com/v1",
         )
 
-        profile = BrowserProfile(headless=True, disable_security=True)
+        chromium_path = shutil.which("chromium") or shutil.which("chromium-browser") or \
+            "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium"
+        profile = BrowserProfile(
+            headless=True,
+            disable_security=True,
+            executable_path=chromium_path,
+            args=["--no-sandbox", "--disable-gpu"],
+        )
         browser_session = BrowserSession(browser_profile=profile)
 
         step_count = 0
