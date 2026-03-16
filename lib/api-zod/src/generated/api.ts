@@ -14,3 +14,35 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * Sends a message to Nova AI and returns the response
+ * @summary Send a chat message
+ */
+export const sendMessageBodyModelDefault = `nova-2-lite-v1`;
+export const sendMessageBodyStreamDefault = false;
+
+export const SendMessageBody = zod.object({
+  messages: zod.array(
+    zod.object({
+      role: zod.enum(["user", "assistant", "system"]),
+      content: zod.string(),
+    }),
+  ),
+  model: zod.string().default(sendMessageBodyModelDefault),
+  stream: zod.boolean().default(sendMessageBodyStreamDefault),
+});
+
+export const SendMessageResponse = zod.object({
+  id: zod.string(),
+  content: zod.string(),
+  role: zod.string(),
+  model: zod.string(),
+  usage: zod
+    .object({
+      prompt_tokens: zod.number(),
+      completion_tokens: zod.number(),
+      total_tokens: zod.number(),
+    })
+    .optional(),
+});
