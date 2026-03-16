@@ -3,10 +3,10 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Globe, Play, StopCircle, Loader2, CheckCircle2, XCircle,
   Terminal, ImageIcon, ChevronRight, Zap, Copy, Check, Brain,
-  MousePointer, Link2, Eye
+  MousePointer, Link2, Eye, HelpCircle, Send, SkipForward
 } from "lucide-react";
 
-type EventType = "connected" | "started" | "step" | "done" | "error" | "ping" | "stream_end";
+type EventType = "connected" | "started" | "step" | "done" | "error" | "ping" | "stream_end" | "human_input_required";
 
 interface AgentEvent {
   type: EventType;
@@ -18,6 +18,7 @@ interface AgentEvent {
   result?: string;
   error?: string;
   message?: string;
+  question?: string;
   timestamp?: string;
 }
 
@@ -30,6 +31,8 @@ interface Task {
   currentThought?: string;
   currentUrl?: string;
   currentStep?: number;
+  waitingForHuman?: boolean;
+  humanQuestion?: string;
 }
 
 const MODELS = [
@@ -65,6 +68,7 @@ function StepIcon({ type }: { type: EventType }) {
   if (type === "done") return <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0" />;
   if (type === "error") return <XCircle className="w-4 h-4 text-red-400 shrink-0" />;
   if (type === "started") return <Zap className="w-4 h-4 text-yellow-400 shrink-0" />;
+  if (type === "human_input_required") return <HelpCircle className="w-4 h-4 text-amber-400 shrink-0" />;
   return <MousePointer className="w-4 h-4 text-blue-400 shrink-0" />;
 }
 
@@ -75,20 +79,29 @@ export default function BrowserAgentPage() {
   const [isRunning, setIsRunning] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showExample, setShowExample] = useState(false);
+  const [humanInput, setHumanInput] = useState("");
+  const [sendingHuman, setSendingHuman] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const humanInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [currentTask?.events]);
+
+  useEffect(() => {
+    if (currentTask?.waitingForHuman) {
+      humanInputRef.current?.focus();
+    }
+  }, [currentTask?.waitingForHuman]);
 
   useEffect(() => () => { eventSourceRef.current?.close(); }, []);
 
   const stopTask = () => {
     eventSourceRef.current?.close();
     setIsRunning(false);
-    setCurrentTask((t) => t ? { ...t, status: "failed" } : t);
+    setCurrentTask((t) => t ? { ...t, status: "failed", waitingForHuman: false } : t);
   };
 
   const copyExample = () => {
@@ -99,11 +112,30 @@ export default function BrowserAgentPage() {
     textareaRef.current?.focus();
   };
 
+  const sendHumanResponse = async () => {
+    if (!currentTask || !humanInput.trim() || sendingHuman) return;
+    setSendingHuman(true);
+    try {
+      await fetch(`/api/browser/tasks/${currentTask.id}/respond`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ response: humanInput.trim() }),
+      });
+      setCurrentTask((t) => t ? { ...t, waitingForHuman: false, humanQuestion: undefined } : t);
+      setHumanInput("");
+    } catch {
+      // ignore
+    } finally {
+      setSendingHuman(false);
+    }
+  };
+
   const runTask = async () => {
     if (!taskInput.trim() || isRunning) return;
     eventSourceRef.current?.close();
     setIsRunning(true);
     setCurrentTask(null);
+    setHumanInput("");
 
     try {
       const res = await fetch("/api/browser/run", {
@@ -140,16 +172,34 @@ export default function BrowserAgentPage() {
           let currentThought = prev.currentThought;
           let currentUrl = prev.currentUrl;
           let currentStep = prev.currentStep;
+          let waitingForHuman = prev.waitingForHuman;
+          let humanQuestion = prev.humanQuestion;
 
           if (event.screenshot) latestScreenshot = event.screenshot;
           if (event.action) currentAction = event.action;
           if (event.thought) currentThought = event.thought;
           if (event.url) currentUrl = event.url;
           if (event.step != null) currentStep = event.step;
-          if (event.type === "done") { status = "completed"; currentAction = undefined; currentThought = undefined; }
-          if (event.type === "error") { status = "failed"; currentAction = undefined; currentThought = undefined; }
 
-          return { ...prev, events, status, latestScreenshot, currentAction, currentThought, currentUrl, currentStep };
+          if (event.type === "human_input_required") {
+            waitingForHuman = true;
+            humanQuestion = event.question;
+            if (event.screenshot) latestScreenshot = event.screenshot;
+          }
+          if (event.type === "done") {
+            status = "completed";
+            currentAction = undefined;
+            currentThought = undefined;
+            waitingForHuman = false;
+          }
+          if (event.type === "error") {
+            status = "failed";
+            currentAction = undefined;
+            currentThought = undefined;
+            waitingForHuman = false;
+          }
+
+          return { ...prev, events, status, latestScreenshot, currentAction, currentThought, currentUrl, currentStep, waitingForHuman, humanQuestion };
         });
 
         if (event.type === "done" || event.type === "error" || event.type === "stream_end") {
@@ -161,7 +211,7 @@ export default function BrowserAgentPage() {
       es.onerror = () => {
         es.close();
         setIsRunning(false);
-        setCurrentTask((prev) => prev ? { ...prev, status: "failed" } : prev);
+        setCurrentTask((prev) => prev ? { ...prev, status: "failed", waitingForHuman: false } : prev);
       };
     } catch {
       setCurrentTask({ id: "err", status: "failed", events: [{ type: "error", error: "Erro de conexão" }] });
@@ -286,9 +336,48 @@ export default function BrowserAgentPage() {
             </div>
           </div>
 
+          {/* Human input prompt — shown when agent needs help */}
+          <AnimatePresence>
+            {currentTask?.waitingForHuman && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="px-4 py-3 border-b border-amber-500/20 bg-amber-500/8 shrink-0"
+              >
+                <div className="flex items-start gap-2 mb-2">
+                  <HelpCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-xs font-semibold text-amber-300">O agente precisa da sua ajuda</p>
+                    <p className="text-xs text-amber-200/70 mt-0.5">{currentTask.humanQuestion}</p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    ref={humanInputRef}
+                    type="text"
+                    value={humanInput}
+                    onChange={(e) => setHumanInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") sendHumanResponse(); }}
+                    placeholder="Digite sua resposta..."
+                    className="flex-1 bg-white/5 border border-amber-500/30 rounded-lg px-3 py-2 text-sm text-white placeholder-white/25 focus:outline-none focus:border-amber-400/60 transition-all"
+                  />
+                  <button
+                    onClick={sendHumanResponse}
+                    disabled={!humanInput.trim() || sendingHuman}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-500/20 text-amber-300 hover:bg-amber-500/35 border border-amber-500/25 text-xs font-medium disabled:opacity-40 transition-all"
+                  >
+                    {sendingHuman ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                    Enviar
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           {/* Live status bar */}
           <AnimatePresence>
-            {currentTask && (
+            {currentTask && !currentTask.waitingForHuman && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: "auto" }}
@@ -358,6 +447,7 @@ export default function BrowserAgentPage() {
                     event.type === "done" ? "bg-green-500/5 border-green-500/10" :
                     event.type === "error" ? "bg-red-500/5 border-red-500/10" :
                     event.type === "started" ? "bg-yellow-500/5 border-yellow-500/10" :
+                    event.type === "human_input_required" ? "bg-amber-500/5 border-amber-500/15" :
                     "bg-white/3 border-white/5"
                   }`}
                 >
@@ -371,6 +461,12 @@ export default function BrowserAgentPage() {
                       </>
                     )}
                     {event.type === "started" && <p className="text-white/60">{event.message}</p>}
+                    {event.type === "human_input_required" && (
+                      <>
+                        <p className="text-amber-300 font-medium">Aguardando sua resposta</p>
+                        {event.question && <p className="text-amber-200/60 mt-0.5 text-[11px]">{event.question}</p>}
+                      </>
+                    )}
                     {event.type === "done" && (
                       <>
                         <p className="text-green-400 font-medium">Concluído!</p>
@@ -397,10 +493,16 @@ export default function BrowserAgentPage() {
               <Eye className="w-3.5 h-3.5" />
               <span>Visualização ao vivo</span>
             </div>
-            {isRunning && (
+            {isRunning && !currentTask?.waitingForHuman && (
               <span className="flex items-center gap-1.5 text-[10px] text-violet-400">
                 <span className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse" />
                 AO VIVO
+              </span>
+            )}
+            {currentTask?.waitingForHuman && (
+              <span className="flex items-center gap-1.5 text-[10px] text-amber-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                AGUARDANDO
               </span>
             )}
           </div>
@@ -417,12 +519,20 @@ export default function BrowserAgentPage() {
                 <img
                   src={`data:image/png;base64,${currentTask.latestScreenshot}`}
                   alt="Browser screenshot"
-                  className="w-full rounded-xl border border-white/10 shadow-lg"
+                  className={`w-full rounded-xl border shadow-lg ${
+                    currentTask.waitingForHuman ? "border-amber-500/30" : "border-white/10"
+                  }`}
                 />
-                {isRunning && (
+                {isRunning && !currentTask.waitingForHuman && (
                   <div className="absolute top-2 right-2 flex items-center gap-1 bg-black/70 rounded-md px-2 py-1 text-[10px] text-white/70 backdrop-blur">
                     <Loader2 className="w-2.5 h-2.5 animate-spin" />
                     Atualizando...
+                  </div>
+                )}
+                {currentTask.waitingForHuman && (
+                  <div className="absolute top-2 right-2 flex items-center gap-1 bg-amber-900/80 rounded-md px-2 py-1 text-[10px] text-amber-300 backdrop-blur border border-amber-500/30">
+                    <HelpCircle className="w-2.5 h-2.5" />
+                    Precisa de ajuda
                   </div>
                 )}
               </motion.div>
@@ -434,6 +544,20 @@ export default function BrowserAgentPage() {
             )}
 
             <AnimatePresence>
+              {currentTask?.waitingForHuman && (
+                <motion.div
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20"
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <HelpCircle className="w-4 h-4 text-amber-400" />
+                    <span className="text-xs font-medium text-amber-300">O agente precisa de você</span>
+                  </div>
+                  <p className="text-xs text-amber-200/60 mb-2">{currentTask.humanQuestion}</p>
+                  <p className="text-[10px] text-white/30">Responda no painel à esquerda ↙</p>
+                </motion.div>
+              )}
               {currentTask?.status === "completed" && (
                 <motion.div
                   initial={{ opacity: 0, y: 8 }}

@@ -34,24 +34,87 @@ You must respond with ONLY a JSON object (no markdown, no code fences) in exactl
 
 Available commands and args:
 - navigate [url]              — go to a URL
-- click [selector]            — click an element by CSS selector or text
+- click [selector]            — click an element by CSS selector or text=Label
 - fill [selector, text]       — clear and type text into input
 - type [selector, text]       — type text without clearing
 - press [key]                 — press a keyboard key (Enter, Tab, Escape, ArrowDown, etc)
 - scroll [direction]          — scroll the page (up/down/left/right)
-- wait [ms]                   — wait milliseconds (e.g. "2000" to wait 2 seconds)
+- wait [ms]                   — wait milliseconds (e.g. "2000")
 - wait_text [text]            — wait for text to appear on page
 - eval [js]                   — run JavaScript in the browser console
+- skip_video                  — skip/bypass the current video on the page (no args)
+- ask_human [question]        — pause and ask the human user a question (use for CAPTCHAs or when stuck)
 - snapshot                    — get fresh accessibility tree (no args)
 - screenshot                  — take a screenshot (no args)
 - done [result]               — finish task with this result message
 - fail [reason]               — stop if task is impossible
 
 Rules:
-- Use specific CSS selectors (e.g. input[name="q"], button[type="submit"]) when possible
+- Use specific CSS selectors when possible (e.g. input[name="q"], button[type="submit"])
 - For text-based clicks use: text=Button Label
+- When you see a CAPTCHA: use ask_human with a clear description and the question "What does the CAPTCHA say?"
+- When you are completely stuck or unsure what to do: use ask_human to ask the user
+- When you see a video that must be watched: use skip_video to bypass it
 - Keep thought brief, description clear and human-friendly
 - ONLY output valid JSON — no extra text"""
+
+# JavaScript snippets for video skipping
+VIDEO_SKIP_SCRIPTS = [
+    # Generic: skip all videos
+    """
+    (function() {
+        var videos = document.querySelectorAll('video');
+        var skipped = 0;
+        videos.forEach(function(v) {
+            try {
+                v.muted = true;
+                if (v.duration && isFinite(v.duration)) {
+                    v.currentTime = v.duration - 0.1;
+                }
+                v.playbackRate = 16;
+                skipped++;
+            } catch(e) {}
+        });
+        return 'Skipped ' + skipped + ' video(s)';
+    })()
+    """,
+    # Edgenuity / ITS Learning specific
+    """
+    (function() {
+        try {
+            // Try Edgenuity skip
+            if (window.player && window.player.duration) {
+                window.player.seek(window.player.duration);
+                return 'Edgenuity player skipped';
+            }
+        } catch(e) {}
+        try {
+            // Try jwplayer
+            if (typeof jwplayer !== 'undefined') {
+                var p = jwplayer();
+                p.seek(p.getDuration());
+                return 'JWPlayer skipped';
+            }
+        } catch(e) {}
+        try {
+            // Try VideoJS
+            if (typeof videojs !== 'undefined') {
+                var players = Object.values(videojs.getPlayers());
+                players.forEach(function(p) { p.currentTime(p.duration()); });
+                return 'VideoJS skipped';
+            }
+        } catch(e) {}
+        // Dispatch ended events on all videos
+        document.querySelectorAll('video').forEach(function(v) {
+            try {
+                v.dispatchEvent(new Event('ended'));
+                v.currentTime = v.duration || 99999;
+            } catch(e) {}
+        });
+        return 'Dispatched ended events';
+    })()
+    """,
+]
 
 
 app = FastAPI(title="Browser Agent Server")
@@ -64,11 +127,17 @@ app.add_middleware(
 
 tasks: dict[str, dict] = {}
 task_queues: dict[str, asyncio.Queue] = {}
+# human_input_futures: task_id -> asyncio.Future waiting for human response
+human_input_futures: dict[str, asyncio.Future] = {}
 
 
 class RunRequest(BaseModel):
     task: str
     model: str = "nova-pro-v1"
+
+
+class HumanInputRequest(BaseModel):
+    response: str
 
 
 @app.get("/health")
@@ -92,7 +161,7 @@ async def get_task(task_id: str):
 async def run_task(request: RunRequest):
     nova_api_key = os.environ.get("NOVA_API_KEY")
     if not nova_api_key:
-        raise HTTPException(status_code=500, detail="NOVA_API_KEY not configured. Please add it to your secrets.")
+        raise HTTPException(status_code=500, detail="NOVA_API_KEY not configured.")
 
     task_id = str(uuid.uuid4())[:8]
     queue: asyncio.Queue = asyncio.Queue()
@@ -108,6 +177,17 @@ async def run_task(request: RunRequest):
     }
     asyncio.create_task(_run_agent(task_id, request.task, request.model, nova_api_key, queue))
     return {"task_id": task_id}
+
+
+@app.post("/tasks/{task_id}/respond")
+async def human_respond(task_id: str, body: HumanInputRequest):
+    """Endpoint called by the frontend when the user answers a human_input_required request."""
+    if task_id not in human_input_futures:
+        raise HTTPException(status_code=404, detail="No pending human input for this task")
+    future = human_input_futures.pop(task_id)
+    if not future.done():
+        future.get_event_loop().call_soon_threadsafe(future.set_result, body.response)
+    return {"ok": True}
 
 
 @app.get("/stream/{task_id}")
@@ -136,7 +216,6 @@ async def stream_task(task_id: str):
 
 
 async def _ask_nova(api_key: str, model: str, messages: list, retries: int = 5) -> str:
-    """Call Nova API with automatic retry on 429 rate-limit errors."""
     import urllib.request
     import urllib.error
 
@@ -195,7 +274,6 @@ async def _ask_nova(api_key: str, model: str, messages: list, retries: int = 5) 
 
 
 def _parse_action(text: str) -> dict | None:
-    """Parse JSON action from LLM response, stripping code fences if needed."""
     text = text.strip()
     if text.startswith("```"):
         idx = text.find("\n")
@@ -213,7 +291,6 @@ def _parse_action(text: str) -> dict | None:
 
 
 def _accessibility_to_text(node: dict | None, indent: int = 0) -> str:
-    """Convert Playwright accessibility snapshot to readable text."""
     if not node:
         return ""
     lines = []
@@ -230,6 +307,40 @@ def _accessibility_to_text(node: dict | None, indent: int = 0) -> str:
     for child in node.get("children", []):
         lines.append(_accessibility_to_text(child, indent + 1))
     return "\n".join(lines)
+
+
+async def _wait_for_human(task_id: str, question: str, queue: asyncio.Queue, screenshot_b64: str | None) -> str:
+    """Pause agent, emit human_input_required event, and wait for user response."""
+    loop = asyncio.get_event_loop()
+    future: asyncio.Future = loop.create_future()
+    human_input_futures[task_id] = future
+
+    await queue.put({
+        "type": "human_input_required",
+        "question": question,
+        "screenshot": screenshot_b64,
+        "timestamp": datetime.now().isoformat(),
+    })
+
+    # Wait up to 5 minutes for human to respond
+    try:
+        response = await asyncio.wait_for(asyncio.shield(future), timeout=300)
+        return response
+    except asyncio.TimeoutError:
+        human_input_futures.pop(task_id, None)
+        return "(sem resposta)"
+
+
+async def _skip_video(page) -> str:
+    """Try multiple strategies to skip video on the page."""
+    results = []
+    for script in VIDEO_SKIP_SCRIPTS:
+        try:
+            result = await page.evaluate(script)
+            results.append(str(result))
+        except Exception as e:
+            results.append(f"erro: {e}")
+    return "; ".join(results)
 
 
 async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: asyncio.Queue):
@@ -271,17 +382,16 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
         while step < max_steps:
             step += 1
 
-            # Get current URL
             current_url = page.url
 
-            # Get accessibility snapshot
+            # Accessibility snapshot
             try:
                 ax_tree = await page.accessibility.snapshot()
                 snapshot = _accessibility_to_text(ax_tree)[:5000]
             except Exception:
                 snapshot = "(could not get accessibility tree)"
 
-            # Take screenshot
+            # Screenshot
             screenshot_b64 = None
             try:
                 screenshot_bytes = await page.screenshot(type="png")
@@ -289,7 +399,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             except Exception:
                 pass
 
-            # Build LLM message (include image every 3 steps)
+            # Build LLM message
             include_image = screenshot_b64 and (step % 3 == 1 or step == 1)
             user_content: list = [
                 {"type": "text", "text": f"Step {step}\nURL: {current_url}\n\nSNAPSHOT:\n{snapshot}"}
@@ -302,7 +412,6 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
 
             messages.append({"role": "user", "content": user_content})
 
-            # Trim history: keep system + first user + last 12 messages
             if len(messages) > 15:
                 messages = messages[:2] + messages[-12:]
 
@@ -352,7 +461,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                 "timestamp": datetime.now().isoformat(),
             })
 
-            # Execute action using Playwright
+            # Execute action
             try:
                 if action == "done":
                     result = args[0] if args else "Tarefa concluída."
@@ -369,6 +478,28 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                 elif action == "fail":
                     reason = args[0] if args else "Tarefa impossível."
                     raise Exception(reason)
+
+                elif action == "ask_human":
+                    question = args[0] if args else "O que devo fazer aqui?"
+                    human_response = await _wait_for_human(task_id, question, queue, screenshot_b64)
+                    # Inject human response back into the conversation
+                    messages.append({
+                        "role": "user",
+                        "content": f"[Human response to your question '{question}']: {human_response}\nContinue the task using this information."
+                    })
+
+                elif action == "skip_video":
+                    skip_result = await _skip_video(page)
+                    await asyncio.sleep(1)
+                    await queue.put({
+                        "type": "step",
+                        "step": step,
+                        "thought": f"Resultado do skip: {skip_result}",
+                        "action": "Vídeo pulado via JavaScript",
+                        "url": current_url,
+                        "screenshot": screenshot_b64,
+                        "timestamp": datetime.now().isoformat(),
+                    })
 
                 elif action == "navigate":
                     url = args[0] if args else ""
@@ -421,13 +552,12 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     await asyncio.sleep(0.5)
 
                 elif action in ("snapshot", "screenshot"):
-                    pass  # already done at top of loop
+                    pass
 
                 else:
-                    pass  # Unknown action — continue
+                    pass
 
             except Exception as action_err:
-                # Log action error but keep going
                 await queue.put({
                     "type": "step",
                     "step": step,
@@ -438,7 +568,6 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     "timestamp": datetime.now().isoformat(),
                 })
 
-        # Max steps reached
         tasks[task_id]["status"] = "completed"
         tasks[task_id]["result"] = "Limite de passos atingido."
         await queue.put({
@@ -468,6 +597,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                 await playwright_ctx.stop()
         except Exception:
             pass
+        human_input_futures.pop(task_id, None)
         await queue.put(None)
 
 

@@ -37,6 +37,10 @@ router.post("/browser/run", async (req, res) => {
   await proxyJson(req, res, "/run", "POST", req.body);
 });
 
+router.post("/browser/tasks/:taskId/respond", async (req, res) => {
+  await proxyJson(req, res, `/tasks/${req.params.taskId}/respond`, "POST", req.body);
+});
+
 router.get("/browser/stream/:taskId", async (req: Request, res: Response) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
