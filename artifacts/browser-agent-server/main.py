@@ -186,7 +186,7 @@ async def human_respond(task_id: str, body: HumanInputRequest):
         raise HTTPException(status_code=404, detail="No pending human input for this task")
     future = human_input_futures.pop(task_id)
     if not future.done():
-        future.get_event_loop().call_soon_threadsafe(future.set_result, body.response)
+        future.set_result(body.response)
     return {"ok": True}
 
 
@@ -311,8 +311,7 @@ def _accessibility_to_text(node: dict | None, indent: int = 0) -> str:
 
 async def _wait_for_human(task_id: str, question: str, queue: asyncio.Queue, screenshot_b64: str | None) -> str:
     """Pause agent, emit human_input_required event, and wait for user response."""
-    loop = asyncio.get_event_loop()
-    future: asyncio.Future = loop.create_future()
+    future: asyncio.Future = asyncio.get_event_loop().create_future()
     human_input_futures[task_id] = future
 
     await queue.put({
@@ -324,8 +323,8 @@ async def _wait_for_human(task_id: str, question: str, queue: asyncio.Queue, scr
 
     # Wait up to 5 minutes for human to respond
     try:
-        response = await asyncio.wait_for(asyncio.shield(future), timeout=300)
-        return response
+        response = await asyncio.wait_for(future, timeout=300)
+        return str(response)
     except asyncio.TimeoutError:
         human_input_futures.pop(task_id, None)
         return "(sem resposta)"
@@ -482,10 +481,24 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                 elif action == "ask_human":
                     question = args[0] if args else "O que devo fazer aqui?"
                     human_response = await _wait_for_human(task_id, question, queue, screenshot_b64)
-                    # Inject human response back into the conversation
+                    # Emit confirmation that we got the response
+                    await queue.put({
+                        "type": "step",
+                        "step": step,
+                        "thought": f"Recebi a resposta do usuário: {human_response}",
+                        "action": f"Resposta recebida — continuando a tarefa",
+                        "url": current_url,
+                        "screenshot": screenshot_b64,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    # Inject human response back into the conversation explicitly
                     messages.append({
                         "role": "user",
-                        "content": f"[Human response to your question '{question}']: {human_response}\nContinue the task using this information."
+                        "content": (
+                            f"The human answered your question '{question}' with: \"{human_response}\"\n"
+                            f"Now immediately use this information to continue. "
+                            f"If this was a CAPTCHA answer, use the 'fill' or 'type' action to enter \"{human_response}\" into the CAPTCHA input field on the page, then submit."
+                        )
                     })
 
                 elif action == "skip_video":
