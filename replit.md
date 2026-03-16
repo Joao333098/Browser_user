@@ -1,4 +1,4 @@
-# Workspace
+# Workspace — Nova AI Chat + Browser Agent
 
 ## Overview
 
