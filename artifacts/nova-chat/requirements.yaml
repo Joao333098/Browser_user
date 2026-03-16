@@ -1,0 +1,19 @@
+packages:
+  "framer-motion": "For smooth message appearance animations and layout transitions"
+  "react-markdown": "To render Markdown formatting in AI responses"
+  "remark-gfm": "To support GitHub Flavored Markdown (tables, strikethrough) in responses"
+  "react-syntax-highlighter": "To beautifully format code blocks in AI responses"
+  "date-fns": "For elegant message timestamp formatting"
+  "clsx": "Utility for conditional class joining"
+  "tailwind-merge": "Utility for merging tailwind classes safely"
+  "lucide-react": "For beautiful, consistent iconography"
+
+images:
+  - path: "artifacts/nova-chat/public/images/nova-bg.png"
+    description: "A very subtle, dark, sleek, abstract glowing orb or mesh gradient in deep electric blue and violet, suitable for a dark-mode professional AI app background. Mostly deep black/graphite with faint luminescent tech accents."
+    aspect_ratio: "16:9"
+
+notes:
+  - "The API is stateless; full message history is sent on every request."
+  - "The app defaults to dark mode."
+  - "Token usage is updated after every successful AI response."
