@@ -55,7 +55,8 @@ Available commands and args:
 
 Rules:
 - ALWAYS prefer click with the button's exact visible text (e.g. click ["Next"], click ["Submit"], click ["Continue"])
-- Only use click_css when click by text fails
+- If click fails with "Could not click", IMMEDIATELY retry using click_css with a CSS selector (e.g. click_css ["a[aria-label*='Next']"], click_css ["button.next"], click_css [".pagination a:last-child"])
+- For pagination/next page: try click_css ["a[aria-label*='next' i]"], click_css [".next a"], click_css ["[rel='next']"], or press ["Tab"] then press ["Enter"]
 - For CAPTCHA: use ask_human, the screenshot will be sent to the user automatically
 - When you don't know an answer to a quiz/question: use search_web to find it
 - When you see a video that must be watched: use skip_video to bypass it
@@ -373,40 +374,96 @@ async def _get_clickable_elements(page) -> str:
 async def _robust_click(page, text: str) -> None:
     """Try multiple strategies to click an element by its visible text."""
     text_clean = text.strip().strip('"').strip("'")
+    text_lower = text_clean.lower()
 
-    strategies = [
-        # 1. Playwright get_by_role button
-        lambda: page.get_by_role("button", name=text_clean).first.click(timeout=5000),
-        # 2. get_by_role link
-        lambda: page.get_by_role("link", name=text_clean).first.click(timeout=5000),
-        # 3. get_by_text exact
-        lambda: page.get_by_text(text_clean, exact=True).first.click(timeout=5000),
-        # 4. get_by_text partial
-        lambda: page.get_by_text(text_clean).first.click(timeout=5000),
-        # 5. locator text=
-        lambda: page.locator(f"text={text_clean}").first.click(timeout=5000),
-        # 6. JS click on element containing text
-        lambda: page.evaluate(f"""
-            () => {{
-                const els = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="submit"]'));
-                const el = els.find(e => (e.innerText || e.value || '').trim().includes({json.dumps(text_clean)}));
-                if (el) {{ el.click(); return true; }}
-                throw new Error('not found');
-            }}
-        """),
-    ]
-
-    last_err = None
-    for strategy in strategies:
+    async def _try(coro):
         try:
-            await strategy()
+            await coro
+            await asyncio.sleep(0.4)
+            return True
+        except Exception:
+            return False
+
+    # 1. Exact role=button
+    if await _try(page.get_by_role("button", name=text_clean).first.click(timeout=4000)):
+        return
+    # 2. Exact role=link
+    if await _try(page.get_by_role("link", name=text_clean).first.click(timeout=4000)):
+        return
+    # 3. Case-insensitive role=button
+    if await _try(page.get_by_role("button", name=text_clean, exact=False).first.click(timeout=4000)):
+        return
+    # 4. Case-insensitive role=link
+    if await _try(page.get_by_role("link", name=text_clean, exact=False).first.click(timeout=4000)):
+        return
+    # 5. get_by_text exact
+    if await _try(page.get_by_text(text_clean, exact=True).first.click(timeout=4000)):
+        return
+    # 6. get_by_text partial
+    if await _try(page.get_by_text(text_clean).first.click(timeout=4000)):
+        return
+    # 7. locator text=
+    if await _try(page.locator(f"text={text_clean}").first.click(timeout=4000)):
+        return
+    # 8. get_by_label (for inputs/buttons with aria-label)
+    if await _try(page.get_by_label(text_clean).first.click(timeout=4000)):
+        return
+    # 9. get_by_title
+    if await _try(page.get_by_title(text_clean).first.click(timeout=4000)):
+        return
+    # 10. Comprehensive JS — searches ALL element types, checks innerText/aria-label/title/value, case-insensitive
+    try:
+        found = await page.evaluate(f"""
+            () => {{
+                const needle = {json.dumps(text_lower)};
+                const all = Array.from(document.querySelectorAll(
+                    'button, a, [role="button"], [role="link"], [role="menuitem"], [role="option"], [role="tab"], input[type="submit"], input[type="button"], li, span, div, td, th, label'
+                ));
+                // exact match first
+                let el = all.find(e => {{
+                    const t = (e.innerText || e.textContent || e.value || e.getAttribute('aria-label') || e.getAttribute('title') || '').trim().toLowerCase();
+                    return t === needle;
+                }});
+                // partial match fallback
+                if (!el) {{
+                    el = all.find(e => {{
+                        const t = (e.innerText || e.textContent || e.value || e.getAttribute('aria-label') || e.getAttribute('title') || '').trim().toLowerCase();
+                        return t.includes(needle) || needle.includes(t) && t.length > 2;
+                    }});
+                }}
+                if (el) {{
+                    el.scrollIntoView({{block:'center', behavior:'instant'}});
+                    el.click();
+                    return true;
+                }}
+                return false;
+            }}
+        """)
+        if found:
             await asyncio.sleep(0.5)
             return
-        except Exception as e:
-            last_err = e
-            continue
+    except Exception:
+        pass
 
-    raise Exception(f"Could not click '{text_clean}' after all strategies. Last error: {last_err}")
+    # 11. XPath — searches by normalized text content
+    xpath_exact = f"//*[normalize-space(text())={json.dumps(text_clean)} or normalize-space(@aria-label)={json.dumps(text_clean)} or normalize-space(@title)={json.dumps(text_clean)}]"
+    if await _try(page.locator(f"xpath={xpath_exact}").first.click(timeout=4000)):
+        return
+
+    # 12. XPath case-insensitive via translate
+    try:
+        lc = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        uc = "abcdefghijklmnopqrstuvwxyz"
+        xpath_ci = f"//*[contains(translate(normalize-space(text()),'{lc}','{uc}'),{json.dumps(text_lower)}) or contains(translate(normalize-space(@aria-label),'{lc}','{uc}'),{json.dumps(text_lower)})]"
+        if await _try(page.locator(f"xpath={xpath_ci}").first.click(timeout=4000)):
+            return
+    except Exception:
+        pass
+
+    raise Exception(
+        f"Could not click '{text_clean}' after all strategies. "
+        f"TIP: Use click_css with a CSS selector (e.g. click_css [a[aria-label*='Next'], button.next-page, [data-testid='next']]) or use press [Enter] if a link is already focused."
+    )
 
 
 async def _wait_for_human(task_id: str, question: str, queue: asyncio.Queue, screenshot_b64: str | None) -> str:
