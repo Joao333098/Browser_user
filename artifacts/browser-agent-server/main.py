@@ -22,7 +22,7 @@ SYSTEM_PROMPT = """You are a browser automation agent. You control a real web br
 You also have access to web search (nova_grounding) to look up answers when needed.
 
 At each step you receive:
-1. CLICKABLE ELEMENTS: list of buttons/links on the page with their exact text
+1. ELEMENTS: numbered refs (@e1, @e2, ...) for every interactive element on the page
 2. SNAPSHOT: the accessibility tree of the current page
 3. SCREENSHOT: a base64 PNG of what the browser currently shows
 
@@ -36,9 +36,10 @@ You must respond with ONLY a JSON object (no markdown, no code fences) in exactl
 
 Available commands and args:
 - navigate [url]              — go to a URL
-- click [text]                — click a button or link by its EXACT visible text (e.g. "Next", "Submit", "Continue")
-- click_css [selector]        — click using a CSS selector (e.g. button[type=submit], #btn-next)
-- fill [selector, text]       — clear and type text into input (use CSS selector for the field)
+- click_ref [ref]             — click an element by its ref (e.g. click_ref ["@e3"]) — MOST RELIABLE
+- click [text]                — click by visible text as fallback if no ref available
+- click_css [selector]        — click using a CSS selector as last resort
+- fill [selector, text]       — clear and type text into input (use CSS selector)
 - type [selector, text]       — type text without clearing
 - press [key]                 — press a keyboard key (Enter, Tab, Escape, ArrowDown, etc)
 - scroll [direction]          — scroll the page (up/down/left/right)
@@ -48,15 +49,16 @@ Available commands and args:
 - skip_video                  — skip/bypass the current video on the page (no args)
 - ask_human [question]        — pause and ask the human user a question (use for CAPTCHAs or when stuck)
 - search_web [query]          — search the web for information to answer a question
-- snapshot                    — get fresh accessibility tree (no args)
+- snapshot                    — get fresh element refs and accessibility tree (no args)
 - screenshot                  — take a screenshot (no args)
 - done [result]               — finish task with this result message
 - fail [reason]               — stop if task is impossible
 
 Rules:
-- ALWAYS prefer click with the button's exact visible text (e.g. click ["Next"], click ["Submit"], click ["Continue"])
-- If click fails with "Could not click", IMMEDIATELY retry using click_css with a CSS selector (e.g. click_css ["a[aria-label*='Next']"], click_css ["button.next"], click_css [".pagination a:last-child"])
-- For pagination/next page: try click_css ["a[aria-label*='next' i]"], click_css [".next a"], click_css ["[rel='next']"], or press ["Tab"] then press ["Enter"]
+- ALWAYS prefer click_ref using a ref from the ELEMENTS list (e.g. click_ref ["@e5"]) — it is the most reliable
+- After navigation or page changes, the refs change — use snapshot to get fresh refs before clicking
+- If click_ref fails, fallback to click_css with a CSS selector
+- For pagination "Next page": look in ELEMENTS for the ref of the next-page link, then use click_ref
 - For CAPTCHA: use ask_human, the screenshot will be sent to the user automatically
 - When you don't know an answer to a quiz/question: use search_web to find it
 - When you see a video that must be watched: use skip_video to bypass it
@@ -343,32 +345,91 @@ def _accessibility_to_text(node: dict | None, indent: int = 0) -> str:
     return "\n".join(lines)
 
 
-async def _get_clickable_elements(page) -> str:
-    """Extract all visible clickable elements (buttons, links) with their exact text."""
+async def _get_snapshot_with_refs(page, ref_store: dict) -> str:
+    """
+    Assign @e1, @e2, ... refs to every interactive element on the page.
+    Injects data-agent-ref attributes so click_ref can locate them reliably.
+    Returns a compact text representation for the LLM.
+    """
     try:
-        result = await page.evaluate("""
+        elements = await page.evaluate("""
         () => {
-            const elements = [];
+            // Remove stale refs from previous snapshot
+            document.querySelectorAll('[data-agent-ref]').forEach(el => el.removeAttribute('data-agent-ref'));
+
+            const SELECTORS = [
+                'a[href]', 'button', 'input', 'select', 'textarea',
+                '[role="button"]', '[role="link"]', '[role="menuitem"]',
+                '[role="option"]', '[role="tab"]', '[role="checkbox"]',
+                '[role="radio"]', '[role="switch"]', '[tabindex]',
+                '[onclick]', 'label[for]', 'summary'
+            ].join(', ');
+
             const seen = new Set();
-            const selectors = 'button, a, [role="button"], input[type="submit"], input[type="button"], [onclick]';
-            document.querySelectorAll(selectors).forEach(el => {
-                const text = (el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
-                if (text && text.length < 100 && !seen.has(text)) {
-                    seen.add(text);
-                    const rect = el.getBoundingClientRect();
-                    if (rect.width > 0 && rect.height > 0) {
-                        elements.push(text);
-                    }
-                }
+            const results = [];
+            let idx = 1;
+
+            document.querySelectorAll(SELECTORS).forEach(el => {
+                // Must be visible
+                const rect = el.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) return;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
+
+                // Deduplicate by a signature
+                const tag = el.tagName.toLowerCase();
+                const label = (
+                    el.getAttribute('aria-label') ||
+                    el.getAttribute('title') ||
+                    el.getAttribute('alt') ||
+                    el.value ||
+                    el.innerText ||
+                    el.textContent || ''
+                ).trim().replace(/\\s+/g, ' ').slice(0, 80);
+                const type = el.getAttribute('type') || '';
+                const sig = `${tag}|${type}|${label}`;
+                if (seen.has(sig)) return;
+                seen.add(sig);
+
+                const ref = '@e' + idx++;
+                el.setAttribute('data-agent-ref', ref);
+
+                // Build compact description
+                let desc = `[${tag}`;
+                if (type) desc += ` type="${type}"`;
+                const role = el.getAttribute('role');
+                if (role) desc += ` role="${role}"`;
+                desc += ']';
+
+                if (label) desc += ` "${label}"`;
+
+                const ariaLabel = el.getAttribute('aria-label');
+                if (ariaLabel && ariaLabel !== label) desc += ` aria-label="${ariaLabel}"`;
+
+                const placeholder = el.getAttribute('placeholder');
+                if (placeholder) desc += ` placeholder="${placeholder}"`;
+
+                results.push({ ref, desc });
             });
-            return elements;
+
+            return results;
         }
         """)
-        if result:
-            return "CLICKABLE ELEMENTS: " + " | ".join(f'"{t}"' for t in result[:30])
-        return "CLICKABLE ELEMENTS: (none found)"
-    except Exception:
-        return "CLICKABLE ELEMENTS: (error)"
+
+        if not elements:
+            ref_store.clear()
+            return "ELEMENTS: (none found)"
+
+        # Update ref_store with current refs
+        ref_store.clear()
+        lines = []
+        for item in elements[:60]:  # Cap at 60 elements to save tokens
+            ref_store[item["ref"]] = item["desc"]
+            lines.append(f"{item['ref']} {item['desc']}")
+
+        return "ELEMENTS:\n" + "\n".join(lines)
+    except Exception as e:
+        return f"ELEMENTS: (error: {e})"
 
 
 async def _robust_click(page, text: str) -> None:
