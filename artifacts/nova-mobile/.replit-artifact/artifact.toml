@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/mobile/"
+title = "Nova Mobile"
+version = "1.0.0"
+id = "artifacts/nova-mobile"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+localPort = 23870
+name = "web"
+paths = ["/mobile/"]
+
+[services.development]
+run = "pnpm --filter @workspace/nova-mobile run dev"
+
+[services.env]
+PORT = "23870"
+BASE_PATH = "/mobile/"
+
+[services.production]
+build = ["pnpm", "--filter", "@workspace/nova-mobile", "run", "build"]
+publicDir = "artifacts/nova-mobile/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
