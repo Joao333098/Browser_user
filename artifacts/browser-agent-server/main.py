@@ -19,10 +19,12 @@ CHROMIUM_PATH = (
 NOVA_BASE_URL = "https://api.nova.amazon.com/v1"
 
 SYSTEM_PROMPT = """You are a browser automation agent. You control a real web browser using Playwright.
+You also have access to web search (nova_grounding) to look up answers when needed.
 
 At each step you receive:
-1. SNAPSHOT: the accessibility tree of the current page
-2. SCREENSHOT: a base64 PNG of what the browser currently shows
+1. CLICKABLE ELEMENTS: list of buttons/links on the page with their exact text
+2. SNAPSHOT: the accessibility tree of the current page
+3. SCREENSHOT: a base64 PNG of what the browser currently shows
 
 You must respond with ONLY a JSON object (no markdown, no code fences) in exactly this format:
 {
@@ -34,8 +36,9 @@ You must respond with ONLY a JSON object (no markdown, no code fences) in exactl
 
 Available commands and args:
 - navigate [url]              — go to a URL
-- click [selector]            — click an element by CSS selector or text=Label
-- fill [selector, text]       — clear and type text into input
+- click [text]                — click a button or link by its EXACT visible text (e.g. "Next", "Submit", "Continue")
+- click_css [selector]        — click using a CSS selector (e.g. button[type=submit], #btn-next)
+- fill [selector, text]       — clear and type text into input (use CSS selector for the field)
 - type [selector, text]       — type text without clearing
 - press [key]                 — press a keyboard key (Enter, Tab, Escape, ArrowDown, etc)
 - scroll [direction]          — scroll the page (up/down/left/right)
@@ -44,16 +47,17 @@ Available commands and args:
 - eval [js]                   — run JavaScript in the browser console
 - skip_video                  — skip/bypass the current video on the page (no args)
 - ask_human [question]        — pause and ask the human user a question (use for CAPTCHAs or when stuck)
+- search_web [query]          — search the web for information to answer a question
 - snapshot                    — get fresh accessibility tree (no args)
 - screenshot                  — take a screenshot (no args)
 - done [result]               — finish task with this result message
 - fail [reason]               — stop if task is impossible
 
 Rules:
-- Use specific CSS selectors when possible (e.g. input[name="q"], button[type="submit"])
-- For text-based clicks use: text=Button Label
-- When you see a CAPTCHA: use ask_human with a clear description and the question "What does the CAPTCHA say?"
-- When you are completely stuck or unsure what to do: use ask_human to ask the user
+- ALWAYS prefer click with the button's exact visible text (e.g. click ["Next"], click ["Submit"], click ["Continue"])
+- Only use click_css when click by text fails
+- For CAPTCHA: use ask_human, the screenshot will be sent to the user automatically
+- When you don't know an answer to a quiz/question: use search_web to find it
 - When you see a video that must be watched: use skip_video to bypass it
 - Keep thought brief, description clear and human-friendly
 - ONLY output valid JSON — no extra text"""
@@ -224,6 +228,7 @@ async def _ask_nova(api_key: str, model: str, messages: list, retries: int = 5) 
         "messages": messages,
         "max_tokens": 512,
         "temperature": 0.2,
+        "system_tools": ["nova_grounding"],
     }).encode()
 
     loop = asyncio.get_event_loop()
@@ -309,6 +314,73 @@ def _accessibility_to_text(node: dict | None, indent: int = 0) -> str:
     return "\n".join(lines)
 
 
+async def _get_clickable_elements(page) -> str:
+    """Extract all visible clickable elements (buttons, links) with their exact text."""
+    try:
+        result = await page.evaluate("""
+        () => {
+            const elements = [];
+            const seen = new Set();
+            const selectors = 'button, a, [role="button"], input[type="submit"], input[type="button"], [onclick]';
+            document.querySelectorAll(selectors).forEach(el => {
+                const text = (el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
+                if (text && text.length < 100 && !seen.has(text)) {
+                    seen.add(text);
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width > 0 && rect.height > 0) {
+                        elements.push(text);
+                    }
+                }
+            });
+            return elements;
+        }
+        """)
+        if result:
+            return "CLICKABLE ELEMENTS: " + " | ".join(f'"{t}"' for t in result[:30])
+        return "CLICKABLE ELEMENTS: (none found)"
+    except Exception:
+        return "CLICKABLE ELEMENTS: (error)"
+
+
+async def _robust_click(page, text: str) -> None:
+    """Try multiple strategies to click an element by its visible text."""
+    text_clean = text.strip().strip('"').strip("'")
+
+    strategies = [
+        # 1. Playwright get_by_role button
+        lambda: page.get_by_role("button", name=text_clean).first.click(timeout=5000),
+        # 2. get_by_role link
+        lambda: page.get_by_role("link", name=text_clean).first.click(timeout=5000),
+        # 3. get_by_text exact
+        lambda: page.get_by_text(text_clean, exact=True).first.click(timeout=5000),
+        # 4. get_by_text partial
+        lambda: page.get_by_text(text_clean).first.click(timeout=5000),
+        # 5. locator text=
+        lambda: page.locator(f"text={text_clean}").first.click(timeout=5000),
+        # 6. JS click on element containing text
+        lambda: page.evaluate(f"""
+            () => {{
+                const els = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="submit"]'));
+                const el = els.find(e => (e.innerText || e.value || '').trim().includes({json.dumps(text_clean)}));
+                if (el) {{ el.click(); return true; }}
+                throw new Error('not found');
+            }}
+        """),
+    ]
+
+    last_err = None
+    for strategy in strategies:
+        try:
+            await strategy()
+            await asyncio.sleep(0.5)
+            return
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise Exception(f"Could not click '{text_clean}' after all strategies. Last error: {last_err}")
+
+
 async def _wait_for_human(task_id: str, question: str, queue: asyncio.Queue, screenshot_b64: str | None) -> str:
     """Pause agent, emit human_input_required event, and wait for user response."""
     future: asyncio.Future = asyncio.get_event_loop().create_future()
@@ -383,14 +455,17 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
 
             current_url = page.url
 
+            # Clickable elements
+            clickable = await _get_clickable_elements(page)
+
             # Accessibility snapshot
             try:
                 ax_tree = await page.accessibility.snapshot()
-                snapshot = _accessibility_to_text(ax_tree)[:5000]
+                snapshot = _accessibility_to_text(ax_tree)[:4000]
             except Exception:
                 snapshot = "(could not get accessibility tree)"
 
-            # Screenshot
+            # Screenshot — always
             screenshot_b64 = None
             try:
                 screenshot_bytes = await page.screenshot(type="png")
@@ -398,12 +473,11 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             except Exception:
                 pass
 
-            # Build LLM message
-            include_image = screenshot_b64 and (step % 3 == 1 or step == 1)
+            # Build LLM message — always include screenshot
             user_content: list = [
-                {"type": "text", "text": f"Step {step}\nURL: {current_url}\n\nSNAPSHOT:\n{snapshot}"}
+                {"type": "text", "text": f"Step {step}\nURL: {current_url}\n\n{clickable}\n\nSNAPSHOT:\n{snapshot}"}
             ]
-            if include_image:
+            if screenshot_b64:
                 user_content.append({
                     "type": "image_url",
                     "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"},
@@ -519,20 +593,48 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
                 elif action == "click":
+                    # Robust click by visible text
+                    text = args[0] if args else ""
+                    await _robust_click(page, text)
+
+                elif action == "click_css":
+                    # Click by CSS selector as fallback
                     sel = args[0] if args else ""
                     await page.click(sel, timeout=10000)
                     await asyncio.sleep(0.5)
 
+                elif action == "search_web":
+                    # Web search is handled automatically by nova_grounding in the LLM call
+                    # Just inject a prompt so the LLM uses its search results next step
+                    query = args[0] if args else ""
+                    messages.append({
+                        "role": "user",
+                        "content": f"Please search the web for: {query}\nUse the search results to determine the correct answer, then continue the task."
+                    })
+
                 elif action == "fill":
                     sel = args[0] if args else ""
                     text = args[1] if len(args) > 1 else ""
-                    await page.fill(sel, text, timeout=10000)
+                    try:
+                        await page.fill(sel, text, timeout=8000)
+                    except Exception:
+                        # fallback: try to find first visible text input
+                        await page.evaluate(f"""
+                        () => {{
+                            const inputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type]), input[type="email"], input[type="password"], textarea'));
+                            const visible = inputs.find(i => i.offsetWidth > 0 && i.offsetHeight > 0);
+                            if (visible) {{ visible.value = {json.dumps(text)}; visible.dispatchEvent(new Event('input', {{bubbles:true}})); visible.dispatchEvent(new Event('change', {{bubbles:true}})); }}
+                        }}
+                        """)
                     await asyncio.sleep(0.3)
 
                 elif action == "type":
                     sel = args[0] if args else ""
                     text = args[1] if len(args) > 1 else ""
-                    await page.type(sel, text, timeout=10000)
+                    try:
+                        await page.type(sel, text, timeout=8000)
+                    except Exception:
+                        await page.keyboard.type(text)
                     await asyncio.sleep(0.3)
 
                 elif action == "press":
