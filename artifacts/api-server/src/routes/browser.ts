@@ -1,7 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 
 const router: IRouter = Router();
-const BROWSER_AGENT_URL = "http://localhost:8000";
+const BROWSER_AGENT_URL = process.env.BROWSER_AGENT_URL || "http://localhost:8000";
 
 async function proxyJson(req: Request, res: Response, path: string, method = "GET", body?: unknown) {
   try {

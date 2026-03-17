@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    wget curl ca-certificates gnupg \
+    libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+    libxfixes3 libxrandr2 libgbm1 libasound2 libpangocairo-1.0-0 \
+    libpango-1.0-0 libcairo2 libatspi2.0-0 libx11-6 libxcb1 \
+    libxext6 fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml uv.lock ./
+COPY artifacts/browser-agent-server/ artifacts/browser-agent-server/
+
+RUN pip install --no-cache-dir uv
+RUN uv sync --frozen --no-dev
+RUN uv run playwright install chromium
+RUN uv run playwright install-deps chromium
+
+RUN echo '#!/bin/bash\nexport CHROMIUM_PATH=$(find /root/.cache/ms-playwright -name "chrome" -type f 2>/dev/null | head -1)\necho "Using chromium: $CHROMIUM_PATH"\nexec uv run python artifacts/browser-agent-server/main.py' > /app/start.sh
+RUN chmod +x /app/start.sh
+
+EXPOSE 8000
+CMD ["/app/start.sh"]
