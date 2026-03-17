@@ -219,63 +219,91 @@ async def stream_task(task_id: str):
     )
 
 
-async def _ask_nova(api_key: str, model: str, messages: list, retries: int = 5) -> str:
+async def _ask_nova(api_key: str, model: str, messages: list, retries: int = 5, use_grounding: bool = False) -> str:
     import urllib.request
     import urllib.error
-
-    body = json.dumps({
-        "model": model,
-        "messages": messages,
-        "max_tokens": 512,
-        "temperature": 0.2,
-        "system_tools": ["nova_grounding"],
-    }).encode()
+    import sys
 
     loop = asyncio.get_event_loop()
 
-    for attempt in range(retries):
+    def _build_body(grounding: bool) -> bytes:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": 512,
+            "temperature": 0.2,
+        }
+        if grounding:
+            payload["system_tools"] = ["nova_grounding"]
+        return json.dumps(payload).encode()
+
+    def _do_request(body_bytes: bytes):
         req = urllib.request.Request(
             f"{NOVA_BASE_URL}/chat/completions",
-            data=body,
+            data=body_bytes,
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             method="POST",
         )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.loads(resp.read()), None
+        except urllib.error.HTTPError as e:
+            body_bytes_err = e.read()
+            return None, (e.code, body_bytes_err.decode(errors="replace"))
 
-        def _do_request():
-            try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    return json.loads(resp.read()), None
-            except urllib.error.HTTPError as e:
-                body_bytes = e.read()
-                return None, (e.code, body_bytes.decode(errors="replace"))
+    def _extract_content(data: dict) -> str | None:
+        msg = data["choices"][0]["message"]
+        content = msg.get("content")
+        if content:
+            return content
+        # nova_grounding may return tool_use with content null; check other fields
+        for key in ("tool_use", "grounding_result", "search_result", "tool_results"):
+            val = msg.get(key)
+            if val:
+                if isinstance(val, str):
+                    return val
+                if isinstance(val, list) and val:
+                    return str(val[0])
+        print(f"[WARN] No content in response: {json.dumps(data)[:400]}", file=sys.stderr)
+        return None
 
-        data, err = await loop.run_in_executor(None, _do_request)
+    for attempt in range(retries):
+        # Try with grounding first if requested, fallback to plain
+        for grounding in ([True, False] if use_grounding else [False]):
+            data, err = await loop.run_in_executor(None, _do_request, _build_body(grounding))
 
-        if err is None:
-            return data["choices"][0]["message"]["content"]
+            if err is None:
+                content = _extract_content(data)
+                if content:
+                    return content
+                # No content even without grounding — retry
+                break
+            else:
+                code, body_text = err
+                if code == 429:
+                    wait = 20
+                    try:
+                        import re
+                        err_json = json.loads(body_text)
+                        m_msg = err_json.get("message", "")
+                        m = re.search(r"(\d+)\s*second", m_msg)
+                        if m:
+                            wait = int(m.group(1)) + 2
+                    except Exception:
+                        pass
+                    wait = min(wait * (attempt + 1), 60)
+                    await asyncio.sleep(wait)
+                    break  # retry outer loop
+                raise Exception(f"HTTP Error {code}: {body_text[:200]}")
+        else:
+            continue  # grounding loop exhausted without success, retry outer
 
-        code, body_text = err
-        if code == 429:
-            wait = 20
-            try:
-                import re
-                err_json = json.loads(body_text)
-                msg = err_json.get("message", "")
-                m = re.search(r"(\d+)\s*second", msg)
-                if m:
-                    wait = int(m.group(1)) + 2
-            except Exception:
-                pass
-            wait = min(wait * (attempt + 1), 60)
-            await asyncio.sleep(wait)
-            continue
+        await asyncio.sleep(2 * (attempt + 1))
 
-        raise Exception(f"HTTP Error {code}: {body_text[:200]}")
-
-    raise Exception("Rate limit: maximum retries exceeded")
+    raise Exception("Rate limit or empty response: maximum retries exceeded")
 
 
 def _parse_action(text: str) -> dict | None:
@@ -604,12 +632,19 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     await asyncio.sleep(0.5)
 
                 elif action == "search_web":
-                    # Web search is handled automatically by nova_grounding in the LLM call
-                    # Just inject a prompt so the LLM uses its search results next step
                     query = args[0] if args else ""
+                    # Make a dedicated grounding call to search the web
+                    search_messages = [
+                        {"role": "system", "content": "You are a helpful assistant with web search. Answer concisely based on search results."},
+                        {"role": "user", "content": f"Search the web and answer: {query}"}
+                    ]
+                    try:
+                        search_result = await _ask_nova(api_key, model, search_messages, use_grounding=True)
+                    except Exception as e:
+                        search_result = f"(web search failed: {e})"
                     messages.append({
                         "role": "user",
-                        "content": f"Please search the web for: {query}\nUse the search results to determine the correct answer, then continue the task."
+                        "content": f"Web search results for '{query}':\n{search_result}\n\nNow continue the task using this information."
                     })
 
                 elif action == "fill":
