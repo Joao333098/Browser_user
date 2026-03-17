@@ -42,6 +42,7 @@ router.post("/chat", async (req: Request, res: Response) => {
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error(`Nova API error ${response.status}:`, errorText);
       let errorData: { error?: { message?: string } } = {};
       try {
         errorData = JSON.parse(errorText);
@@ -50,7 +51,7 @@ router.post("/chat", async (req: Request, res: Response) => {
       }
       res.status(response.status).json({
         error: "nova_api_error",
-        message: errorData?.error?.message || `Nova API returned status ${response.status}`,
+        message: errorData?.error?.message || errorText || `Nova API returned status ${response.status}`,
       });
       return;
     }
