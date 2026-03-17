@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from "react";
+import { Settings, X, ArrowUp, Sparkles, Globe, ArrowRight } from "lucide-react";
 import { useChatSession, type ParsedCommand, type Message } from "@/hooks/use-chat-session";
 import { useBrowser } from "@/context/BrowserContext";
 
@@ -44,10 +45,9 @@ function MessageBubble({ msg, onCommand }: { msg: Message; onCommand: (c: Parsed
             justifyContent: "center",
             flexShrink: 0,
             marginTop: 2,
-            fontSize: 14,
           }}
         >
-          ✦
+          <Sparkles size={14} color="rgba(255,255,255,0.7)" />
         </div>
       )}
       <div
@@ -78,9 +78,9 @@ function MessageBubble({ msg, onCommand }: { msg: Message; onCommand: (c: Parsed
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 2 }}>
             {msg.commands.map((cmd, i) => {
               const label =
-                cmd.type === "stop" ? "⬛ Parar Browser" :
-                cmd.type === "new_task" ? `▶ Executar: "${(cmd.param ?? "").slice(0, 25)}..."` :
-                `↩ Responder: "${(cmd.param ?? "").slice(0, 20)}..."`;
+                cmd.type === "stop" ? "Parar Browser" :
+                cmd.type === "new_task" ? `Executar: "${(cmd.param ?? "").slice(0, 25)}..."` :
+                `Responder: "${(cmd.param ?? "").slice(0, 20)}..."`;
               return (
                 <button
                   key={i}
@@ -124,10 +124,9 @@ function TypingIndicator() {
           alignItems: "center",
           justifyContent: "center",
           flexShrink: 0,
-          fontSize: 14,
         }}
       >
-        ✦
+        <Sparkles size={14} color="rgba(255,255,255,0.7)" />
       </div>
       <div
         style={{
@@ -261,7 +260,7 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
               fontFamily: "inherit",
             }}
           >
-            ⚙ Config
+            <Settings size={12} style={{ marginRight: 4 }} /> Config
           </button>
           <button
             onClick={clearChat}
@@ -276,7 +275,7 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
               fontFamily: "inherit",
             }}
           >
-            ✕ Limpar
+            <X size={12} style={{ marginRight: 4 }} /> Limpar
           </button>
         </div>
       </div>
@@ -337,12 +336,12 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
             fontFamily: "inherit",
           }}
         >
-          <span style={{ flexShrink: 0 }}>🌐</span>
+          <Globe size={13} style={{ flexShrink: 0 }} />
           <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {isRunning ? (task.currentAction || "Browser em execução...") :
              task.status === "completed" ? "Browser concluído" : "Browser parou"}
           </span>
-          <span style={{ flexShrink: 0, opacity: 0.5 }}>→</span>
+          <ArrowRight size={13} style={{ flexShrink: 0, opacity: 0.5 }} />
         </button>
       )}
 
@@ -378,10 +377,9 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                fontSize: 24,
               }}
             >
-              ✦
+              <Sparkles size={24} color="rgba(255,255,255,0.6)" />
             </div>
             <div style={{ textAlign: "center" }}>
               <p style={{ fontSize: 20, fontWeight: 700, color: "#ffffff", marginBottom: 6 }}>
@@ -490,12 +488,11 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
               alignItems: "center",
               justifyContent: "center",
               flexShrink: 0,
-              fontSize: 16,
               fontFamily: "inherit",
               transition: "all 0.15s",
             }}
           >
-            ↑
+            <ArrowUp size={17} />
           </button>
         </div>
       </div>

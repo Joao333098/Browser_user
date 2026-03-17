@@ -1,4 +1,8 @@
 import { useState, useRef, useEffect } from "react";
+import {
+  Check, X, Zap, ArrowRight, HelpCircle, Globe, Monitor,
+  Brain, Square, Play, ChevronDown, ChevronUp, ZoomIn, Maximize2
+} from "lucide-react";
 import { useBrowser, type AgentEvent } from "@/context/BrowserContext";
 
 const MODELS = [
@@ -18,13 +22,13 @@ function formatTime(iso?: string) {
   return new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-function StepRow({ event, index }: { event: AgentEvent; index: number }) {
-  const icon =
-    event.type === "done" ? "✓" :
-    event.type === "error" ? "✕" :
-    event.type === "started" ? "⚡" :
-    event.type === "human_input_required" ? "?" :
-    "→";
+function StepRow({ event }: { event: AgentEvent }) {
+  const iconEl =
+    event.type === "done" ? <Check size={13} /> :
+    event.type === "error" ? <X size={13} /> :
+    event.type === "started" ? <Zap size={13} /> :
+    event.type === "human_input_required" ? <HelpCircle size={13} /> :
+    <ArrowRight size={13} />;
 
   const iconColor =
     event.type === "done" ? "#6ee7b7" :
@@ -47,8 +51,8 @@ function StepRow({ event, index }: { event: AgentEvent; index: number }) {
                     "rgba(255,255,255,0.02)",
       }}
     >
-      <span style={{ color: iconColor, fontWeight: 700, fontSize: 13, flexShrink: 0, marginTop: 1 }}>
-        {icon}
+      <span style={{ color: iconColor, fontWeight: 700, flexShrink: 0, marginTop: 2, display: "flex" }}>
+        {iconEl}
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
         {event.type === "step" && (
@@ -102,8 +106,72 @@ function StepRow({ event, index }: { event: AgentEvent; index: number }) {
   );
 }
 
-function HumanInputModal({ question, onSubmit }: { question: string; onSubmit: (r: string) => void }) {
+function ScreenshotFullscreen({ src, onClose }: { src: string; onClose: () => void }) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.95)",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 200,
+        padding: 16,
+      }}
+    >
+      <button
+        onClick={onClose}
+        style={{
+          position: "absolute",
+          top: 16,
+          right: 16,
+          width: 36,
+          height: 36,
+          borderRadius: 10,
+          border: "1px solid rgba(255,255,255,0.2)",
+          background: "rgba(255,255,255,0.08)",
+          color: "#ffffff",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <X size={18} />
+      </button>
+      <img
+        src={`data:image/png;base64,${src}`}
+        alt="Browser"
+        style={{
+          maxWidth: "100%",
+          maxHeight: "calc(100vh - 80px)",
+          objectFit: "contain",
+          borderRadius: 12,
+          border: "1px solid rgba(255,255,255,0.12)",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      />
+      <p style={{ color: "rgba(255,255,255,0.3)", fontSize: 12, marginTop: 12 }}>
+        Toque fora para fechar
+      </p>
+    </div>
+  );
+}
+
+function HumanInputModal({
+  question,
+  screenshot,
+  onSubmit,
+}: {
+  question: string;
+  screenshot?: string;
+  onSubmit: (r: string) => void;
+}) {
   const [value, setValue] = useState("");
+  const [showFullscreen, setShowFullscreen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -111,89 +179,161 @@ function HumanInputModal({ question, onSubmit }: { question: string; onSubmit: (
   }, []);
 
   return (
-    <div
-      style={{
-        position: "absolute",
-        inset: 0,
-        background: "rgba(0,0,0,0.85)",
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "flex-end",
-        zIndex: 100,
-      }}
-    >
+    <>
       <div
         style={{
-          background: "#141414",
-          borderTop: "1px solid rgba(252,211,77,0.3)",
-          borderRadius: "20px 20px 0 0",
-          padding: "20px 20px 32px",
+          position: "absolute",
+          inset: 0,
+          background: "rgba(0,0,0,0.85)",
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "flex-end",
+          zIndex: 100,
         }}
       >
-        <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-          <div
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 10,
-              background: "rgba(252,211,77,0.1)",
-              border: "1px solid rgba(252,211,77,0.25)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 16,
-              flexShrink: 0,
-            }}
-          >
-            ?
+        <div
+          style={{
+            background: "#141414",
+            borderTop: "1px solid rgba(252,211,77,0.3)",
+            borderRadius: "20px 20px 0 0",
+            padding: "20px 20px 32px",
+            maxHeight: "85vh",
+            overflowY: "auto",
+          }}
+        >
+          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+            <div
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                background: "rgba(252,211,77,0.1)",
+                border: "1px solid rgba(252,211,77,0.25)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+            >
+              <HelpCircle size={18} color="#fcd34d" />
+            </div>
+            <div>
+              <p style={{ fontSize: 13, fontWeight: 600, color: "#fcd34d", marginBottom: 4 }}>
+                O agente precisa da sua ajuda
+              </p>
+              <p style={{ fontSize: 12, color: "rgba(252,211,77,0.6)", lineHeight: 1.5 }}>{question}</p>
+            </div>
           </div>
-          <div>
-            <p style={{ fontSize: 13, fontWeight: 600, color: "#fcd34d", marginBottom: 4 }}>
-              O agente precisa da sua ajuda
-            </p>
-            <p style={{ fontSize: 12, color: "rgba(252,211,77,0.6)", lineHeight: 1.5 }}>{question}</p>
+
+          {screenshot && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <p style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                  Visualização do browser
+                </p>
+                <button
+                  onClick={() => setShowFullscreen(true)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "4px 8px",
+                    borderRadius: 6,
+                    border: "1px solid rgba(252,211,77,0.3)",
+                    background: "rgba(252,211,77,0.08)",
+                    color: "#fcd34d",
+                    fontSize: 11,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <Maximize2 size={11} />
+                  Ampliar
+                </button>
+              </div>
+              <div
+                onClick={() => setShowFullscreen(true)}
+                style={{
+                  borderRadius: 12,
+                  overflow: "hidden",
+                  border: "2px solid rgba(252,211,77,0.25)",
+                  background: "#111",
+                  cursor: "zoom-in",
+                  position: "relative",
+                }}
+              >
+                <img
+                  src={`data:image/png;base64,${screenshot}`}
+                  alt="CAPTCHA / Browser"
+                  style={{ width: "100%", display: "block" }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    bottom: 8,
+                    right: 8,
+                    background: "rgba(0,0,0,0.6)",
+                    borderRadius: 6,
+                    padding: "4px 6px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  <ZoomIn size={12} color="rgba(255,255,255,0.7)" />
+                  <span style={{ fontSize: 10, color: "rgba(255,255,255,0.7)" }}>Toque para ampliar</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              ref={inputRef}
+              type="text"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && value.trim()) onSubmit(value.trim()); }}
+              placeholder="Sua resposta..."
+              style={{
+                flex: 1,
+                background: "rgba(255,255,255,0.06)",
+                border: "1px solid rgba(252,211,77,0.3)",
+                borderRadius: 12,
+                padding: "12px 14px",
+                color: "#f0f0f0",
+                fontSize: 15,
+                fontFamily: "inherit",
+                outline: "none",
+              }}
+            />
+            <button
+              onClick={() => value.trim() && onSubmit(value.trim())}
+              disabled={!value.trim()}
+              style={{
+                padding: "12px 16px",
+                borderRadius: 12,
+                border: "1px solid rgba(252,211,77,0.25)",
+                background: "rgba(252,211,77,0.12)",
+                color: "#fcd34d",
+                cursor: value.trim() ? "pointer" : "default",
+                opacity: value.trim() ? 1 : 0.4,
+                fontFamily: "inherit",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <ArrowRight size={18} />
+            </button>
           </div>
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input
-            ref={inputRef}
-            type="text"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && value.trim()) onSubmit(value.trim()); }}
-            placeholder="Sua resposta..."
-            style={{
-              flex: 1,
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(252,211,77,0.3)",
-              borderRadius: 12,
-              padding: "12px 14px",
-              color: "#f0f0f0",
-              fontSize: 15,
-              fontFamily: "inherit",
-              outline: "none",
-            }}
-          />
-          <button
-            onClick={() => value.trim() && onSubmit(value.trim())}
-            disabled={!value.trim()}
-            style={{
-              padding: "12px 16px",
-              borderRadius: 12,
-              border: "1px solid rgba(252,211,77,0.25)",
-              background: "rgba(252,211,77,0.12)",
-              color: "#fcd34d",
-              fontSize: 16,
-              cursor: value.trim() ? "pointer" : "default",
-              opacity: value.trim() ? 1 : 0.4,
-              fontFamily: "inherit",
-            }}
-          >
-            ↑
-          </button>
         </div>
       </div>
-    </div>
+
+      {showFullscreen && screenshot && (
+        <ScreenshotFullscreen src={screenshot} onClose={() => setShowFullscreen(false)} />
+      )}
+    </>
   );
 }
 
@@ -240,7 +380,6 @@ function TaskSheet({
           padding: "16px 20px 32px",
         }}
       >
-        {/* Handle */}
         <div style={{ width: 36, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.2)", margin: "0 auto 16px" }} />
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
@@ -254,7 +393,6 @@ function TaskSheet({
               border: "1px solid rgba(255,255,255,0.1)",
               background: "rgba(255,255,255,0.05)",
               color: "rgba(255,255,255,0.5)",
-              fontSize: 14,
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
@@ -262,11 +400,10 @@ function TaskSheet({
               fontFamily: "inherit",
             }}
           >
-            ✕
+            <X size={14} />
           </button>
         </div>
 
-        {/* Model selector */}
         <div style={{ marginBottom: 12 }}>
           <p style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginBottom: 6, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase" }}>
             Modelo
@@ -294,7 +431,6 @@ function TaskSheet({
           </select>
         </div>
 
-        {/* Task input */}
         <div style={{ marginBottom: 12 }}>
           <p style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginBottom: 6, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase" }}>
             Descrição da tarefa
@@ -322,7 +458,6 @@ function TaskSheet({
           />
         </div>
 
-        {/* Quick examples */}
         <div style={{ marginBottom: 14 }}>
           <p style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", marginBottom: 6, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase" }}>
             Exemplos
@@ -351,7 +486,6 @@ function TaskSheet({
           </div>
         </div>
 
-        {/* Run button */}
         <button
           onClick={handleRun}
           disabled={!taskText.trim()}
@@ -368,9 +502,14 @@ function TaskSheet({
             fontFamily: "inherit",
             letterSpacing: "-0.2px",
             transition: "all 0.15s",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
           }}
         >
-          ▶ Executar tarefa
+          <Play size={16} />
+          Executar tarefa
         </button>
       </div>
     </div>
@@ -381,6 +520,7 @@ export default function MobileBrowserPage() {
   const { task, isRunning, runTask, stopTask, respondToHuman } = useBrowser();
   const [showTaskSheet, setShowTaskSheet] = useState(false);
   const [showLog, setShowLog] = useState(true);
+  const [showFullscreenShot, setShowFullscreenShot] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   const visibleEvents = task?.events.filter(
@@ -415,13 +555,13 @@ export default function MobileBrowserPage() {
             </span>
           </>
         ) : task?.status === "completed" ? (
-          <>
-            <span style={{ fontSize: 12, color: "rgba(110,231,183,0.7)" }}>✓ Concluído</span>
-          </>
+          <span style={{ fontSize: 12, color: "rgba(110,231,183,0.7)", display: "flex", alignItems: "center", gap: 5 }}>
+            <Check size={12} /> Concluído
+          </span>
         ) : task?.status === "failed" ? (
-          <>
-            <span style={{ fontSize: 12, color: "rgba(252,165,165,0.7)" }}>✕ Falhou</span>
-          </>
+          <span style={{ fontSize: 12, color: "rgba(252,165,165,0.7)", display: "flex", alignItems: "center", gap: 5 }}>
+            <X size={12} /> Falhou
+          </span>
         ) : (
           <span style={{ fontSize: 12, color: "rgba(255,255,255,0.2)" }}>Nenhuma tarefa ativa</span>
         )}
@@ -432,8 +572,9 @@ export default function MobileBrowserPage() {
         )}
       </div>
 
-      {/* Screenshot */}
+      {/* Browser view */}
       <div
+        onClick={() => task?.latestScreenshot && setShowFullscreenShot(true)}
         style={{
           margin: "12px 16px",
           borderRadius: 12,
@@ -445,17 +586,37 @@ export default function MobileBrowserPage() {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
+          cursor: task?.latestScreenshot ? "zoom-in" : "default",
+          position: "relative",
         }}
       >
         {task?.latestScreenshot ? (
-          <img
-            src={`data:image/png;base64,${task.latestScreenshot}`}
-            alt="Browser"
-            style={{ width: "100%", height: "100%", objectFit: "contain" }}
-          />
+          <>
+            <img
+              src={`data:image/png;base64,${task.latestScreenshot}`}
+              alt="Browser"
+              style={{ width: "100%", height: "100%", objectFit: "contain" }}
+            />
+            <div
+              style={{
+                position: "absolute",
+                bottom: 6,
+                right: 6,
+                background: "rgba(0,0,0,0.55)",
+                borderRadius: 6,
+                padding: "3px 6px",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              <ZoomIn size={11} color="rgba(255,255,255,0.6)" />
+              <span style={{ fontSize: 10, color: "rgba(255,255,255,0.6)" }}>Ampliar</span>
+            </div>
+          </>
         ) : (
           <div style={{ textAlign: "center", color: "rgba(255,255,255,0.15)" }}>
-            <p style={{ fontSize: 28, marginBottom: 6 }}>🖥</p>
+            <Monitor size={32} style={{ marginBottom: 8, opacity: 0.4 }} />
             <p style={{ fontSize: 12 }}>Sem visualização</p>
           </div>
         )}
@@ -473,10 +634,14 @@ export default function MobileBrowserPage() {
             border: "1px solid rgba(255,255,255,0.07)",
             background: "rgba(255,255,255,0.03)",
             flexShrink: 0,
+            display: "flex",
+            gap: 6,
+            alignItems: "flex-start",
           }}
         >
+          <Brain size={12} color="rgba(255,255,255,0.3)" style={{ marginTop: 2, flexShrink: 0 }} />
           <p style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", fontStyle: "italic", lineHeight: 1.4 }}>
-            💭 {task.currentThought}
+            {task.currentThought}
           </p>
         </div>
       )}
@@ -506,12 +671,14 @@ export default function MobileBrowserPage() {
             }}
           >
             <span>Log de passos ({visibleEvents.length})</span>
-            <span style={{ marginLeft: "auto" }}>{showLog ? "▲" : "▼"}</span>
+            <span style={{ marginLeft: "auto", display: "flex" }}>
+              {showLog ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            </span>
           </button>
           {showLog && (
             <div style={{ flex: 1, overflowY: "auto", scrollbarWidth: "none", paddingBottom: 8 }}>
               {visibleEvents.map((event, i) => (
-                <StepRow key={i} event={event} index={i} />
+                <StepRow key={i} event={event} />
               ))}
               <div ref={logsEndRef} />
             </div>
@@ -532,9 +699,9 @@ export default function MobileBrowserPage() {
             paddingBottom: 20,
           }}
         >
-          <p style={{ fontSize: 32, marginBottom: 0 }}>🌐</p>
+          <Globe size={36} color="rgba(255,255,255,0.15)" />
           <p style={{ fontSize: 14, color: "rgba(255,255,255,0.3)", textAlign: "center", maxWidth: 240, lineHeight: 1.5 }}>
-            Nenhuma tarefa. Toque em "Nova Tarefa" para o agente navegar na web.
+            Nenhuma tarefa. Toque em "Iniciar Tarefa" para o agente navegar na web.
           </p>
         </div>
       )}
@@ -562,9 +729,13 @@ export default function MobileBrowserPage() {
               fontWeight: 600,
               cursor: "pointer",
               fontFamily: "inherit",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
             }}
           >
-            ⬛ Parar tarefa
+            <Square size={15} /> Parar tarefa
           </button>
         ) : (
           <button
@@ -581,14 +752,17 @@ export default function MobileBrowserPage() {
               cursor: "pointer",
               fontFamily: "inherit",
               letterSpacing: "-0.2px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
             }}
           >
-            ▶ {task ? "Nova tarefa" : "Iniciar tarefa"}
+            <Play size={16} /> {task ? "Nova tarefa" : "Iniciar tarefa"}
           </button>
         )}
       </div>
 
-      {/* Task sheet */}
       {showTaskSheet && (
         <TaskSheet
           onClose={() => setShowTaskSheet(false)}
@@ -596,11 +770,18 @@ export default function MobileBrowserPage() {
         />
       )}
 
-      {/* Human input modal */}
       {task?.waitingForHuman && task.humanQuestion && (
         <HumanInputModal
           question={task.humanQuestion}
+          screenshot={task.latestScreenshot}
           onSubmit={(r) => respondToHuman(r)}
+        />
+      )}
+
+      {showFullscreenShot && task?.latestScreenshot && (
+        <ScreenshotFullscreen
+          src={task.latestScreenshot}
+          onClose={() => setShowFullscreenShot(false)}
         />
       )}
 
