@@ -3,10 +3,10 @@ import { SendMessageBody } from "@workspace/api-zod";
 
 const router: IRouter = Router();
 
-const NOVA_API_KEY = process.env.NOVA_API_KEY;
 const NOVA_BASE_URL = "https://api.nova.amazon.com/v1";
 
 router.post("/chat", async (req: Request, res: Response) => {
+  const NOVA_API_KEY = process.env.NOVA_API_KEY;
   if (!NOVA_API_KEY) {
     res.status(500).json({
       error: "configuration_error",
