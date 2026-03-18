@@ -641,7 +641,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
         ]
 
         step = 0
-        max_steps = 100
+        max_steps = 300
         ref_store: dict = {}
 
         while step < max_steps:
