@@ -568,14 +568,15 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
 
         step = 0
         max_steps = 100
+        ref_store: dict = {}
 
         while step < max_steps:
             step += 1
 
             current_url = page.url
 
-            # Clickable elements
-            clickable = await _get_clickable_elements(page)
+            # Clickable elements with refs
+            clickable = await _get_snapshot_with_refs(page, ref_store)
 
             # Accessibility snapshot
             try:
@@ -715,6 +716,20 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     # Robust click by visible text
                     text = args[0] if args else ""
                     await _robust_click(page, text)
+
+                elif action == "click_ref":
+                    ref = args[0] if args else ""
+                    try:
+                        await page.click(f"[data-agent-ref='{ref}']", timeout=8000)
+                    except Exception:
+                        # Fallback: use ref description to click by text
+                        desc = ref_store.get(ref, "")
+                        if desc:
+                            label = desc.split('"')[1] if '"' in desc else desc
+                            await _robust_click(page, label)
+                        else:
+                            raise Exception(f"Ref {ref} not found in current page")
+                    await asyncio.sleep(0.5)
 
                 elif action == "click_css":
                     # Click by CSS selector as fallback
