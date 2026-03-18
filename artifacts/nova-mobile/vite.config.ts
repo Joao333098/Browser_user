@@ -7,7 +7,7 @@ import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 const rawPort = process.env.PORT;
 const port = rawPort && !Number.isNaN(Number(rawPort)) && Number(rawPort) > 0
   ? Number(rawPort)
-  : 3000;
+  : 5000;
 
 const basePath = process.env.BASE_PATH ?? "/mobile/";
 
