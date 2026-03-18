@@ -71,6 +71,48 @@ function StepIcon({ type }: { type: EventType }) {
   return <MousePointer className="w-4 h-4 text-blue-400 shrink-0" />;
 }
 
+const STORAGE_KEY = "nova_browser_agent";
+
+function saveState(task: Task, taskInput: string, model: string, running: boolean) {
+  try {
+    const eventsClean = task.events.map(e => ({ ...e, screenshot: undefined }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      id: task.id, status: task.status, taskInput, model, running,
+      events: eventsClean,
+      currentAction: task.currentAction,
+      currentThought: task.currentThought,
+      currentUrl: task.currentUrl,
+      currentStep: task.currentStep,
+      waitingForHuman: task.waitingForHuman,
+      humanQuestion: task.humanQuestion,
+    }));
+    if (task.latestScreenshot) {
+      try { sessionStorage.setItem(`${STORAGE_KEY}_ss`, task.latestScreenshot); } catch { /* quota */ }
+    }
+  } catch { /* quota */ }
+}
+
+function loadState(): { task: Task; taskInput: string; model: string; running: boolean } | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw);
+    const latestScreenshot = sessionStorage.getItem(`${STORAGE_KEY}_ss`) ?? undefined;
+    return {
+      task: {
+        id: d.id, status: d.status, events: d.events ?? [],
+        latestScreenshot,
+        currentAction: d.currentAction, currentThought: d.currentThought,
+        currentUrl: d.currentUrl, currentStep: d.currentStep,
+        waitingForHuman: d.waitingForHuman, humanQuestion: d.humanQuestion,
+      },
+      taskInput: d.taskInput ?? "",
+      model: d.model ?? "meta-llama/llama-4-scout-17b-16e-instruct",
+      running: d.running ?? false,
+    };
+  } catch { return null; }
+}
+
 export default function BrowserAgentPage() {
   const [taskInput, setTaskInput] = useState("");
   const [model, setModel] = useState("meta-llama/llama-4-scout-17b-16e-instruct");
@@ -90,17 +132,102 @@ export default function BrowserAgentPage() {
   }, [currentTask?.events]);
 
   useEffect(() => {
-    if (currentTask?.waitingForHuman) {
-      humanInputRef.current?.focus();
-    }
+    if (currentTask?.waitingForHuman) humanInputRef.current?.focus();
   }, [currentTask?.waitingForHuman]);
 
   useEffect(() => () => { eventSourceRef.current?.close(); }, []);
+
+  // Save state to localStorage whenever task or running state changes
+  useEffect(() => {
+    if (currentTask) saveState(currentTask, taskInput, model, isRunning);
+  }, [currentTask, isRunning]);
+
+  const connectToTask = (taskId: string) => {
+    eventSourceRef.current?.close();
+    const es = new EventSource(`/api/browser/stream/${taskId}`);
+    eventSourceRef.current = es;
+
+    es.onmessage = (e) => {
+      const event: AgentEvent = JSON.parse(e.data);
+      setCurrentTask((prev) => {
+        if (!prev) return prev;
+        const events = event.type === "ping" ? prev.events : [...prev.events, event];
+        let status = prev.status;
+        let latestScreenshot = prev.latestScreenshot;
+        let currentAction = prev.currentAction;
+        let currentThought = prev.currentThought;
+        let currentUrl = prev.currentUrl;
+        let currentStep = prev.currentStep;
+        let waitingForHuman = prev.waitingForHuman;
+        let humanQuestion = prev.humanQuestion;
+
+        if (event.screenshot) latestScreenshot = event.screenshot;
+        if (event.action) currentAction = event.action;
+        if (event.thought) currentThought = event.thought;
+        if (event.url) currentUrl = event.url;
+        if (event.step != null) currentStep = event.step;
+
+        if (event.type === "human_input_required") {
+          waitingForHuman = true;
+          humanQuestion = event.question;
+          if (event.screenshot) latestScreenshot = event.screenshot;
+        }
+        if (event.type === "done") {
+          status = "completed";
+          currentAction = undefined;
+          currentThought = undefined;
+          waitingForHuman = false;
+        }
+        if (event.type === "error") {
+          status = "failed";
+          currentAction = undefined;
+          currentThought = undefined;
+          waitingForHuman = false;
+        }
+
+        return { ...prev, events, status, latestScreenshot, currentAction, currentThought, currentUrl, currentStep, waitingForHuman, humanQuestion };
+      });
+
+      if (event.type === "done" || event.type === "error" || event.type === "stream_end") {
+        es.close();
+        setIsRunning(false);
+      }
+    };
+
+    es.onerror = () => {
+      es.close();
+      setIsRunning(false);
+      setCurrentTask((prev) => prev ? { ...prev, waitingForHuman: false } : prev);
+    };
+  };
+
+  // On mount: restore persisted state and reconnect if task was running
+  useEffect(() => {
+    const saved = loadState();
+    if (!saved) return;
+    setTaskInput(saved.taskInput);
+    setModel(saved.model);
+    setCurrentTask(saved.task);
+    if (saved.running && saved.task.status === "running") {
+      setIsRunning(true);
+      connectToTask(saved.task.id);
+    }
+  }, []);
 
   const stopTask = () => {
     eventSourceRef.current?.close();
     setIsRunning(false);
     setCurrentTask((t) => t ? { ...t, status: "failed", waitingForHuman: false } : t);
+  };
+
+  const clearTask = () => {
+    eventSourceRef.current?.close();
+    localStorage.removeItem(STORAGE_KEY);
+    sessionStorage.removeItem(`${STORAGE_KEY}_ss`);
+    setCurrentTask(null);
+    setIsRunning(false);
+    setTaskInput("");
+    setHumanInput("");
   };
 
   const copyExample = () => {
@@ -145,10 +272,7 @@ export default function BrowserAgentPage() {
 
       if (!res.ok) {
         const err = await res.json();
-        setCurrentTask({
-          id: "err", status: "failed",
-          events: [{ type: "error", error: err.message || "Falha ao iniciar tarefa" }],
-        });
+        setCurrentTask({ id: "err", status: "failed", events: [{ type: "error", error: err.message || "Falha ao iniciar tarefa" }] });
         setIsRunning(false);
         return;
       }
@@ -156,62 +280,7 @@ export default function BrowserAgentPage() {
       const { task_id } = await res.json();
       const task: Task = { id: task_id, status: "running", events: [] };
       setCurrentTask(task);
-
-      const es = new EventSource(`/api/browser/stream/${task_id}`);
-      eventSourceRef.current = es;
-
-      es.onmessage = (e) => {
-        const event: AgentEvent = JSON.parse(e.data);
-        setCurrentTask((prev) => {
-          if (!prev) return prev;
-          const events = event.type === "ping" ? prev.events : [...prev.events, event];
-          let status = prev.status;
-          let latestScreenshot = prev.latestScreenshot;
-          let currentAction = prev.currentAction;
-          let currentThought = prev.currentThought;
-          let currentUrl = prev.currentUrl;
-          let currentStep = prev.currentStep;
-          let waitingForHuman = prev.waitingForHuman;
-          let humanQuestion = prev.humanQuestion;
-
-          if (event.screenshot) latestScreenshot = event.screenshot;
-          if (event.action) currentAction = event.action;
-          if (event.thought) currentThought = event.thought;
-          if (event.url) currentUrl = event.url;
-          if (event.step != null) currentStep = event.step;
-
-          if (event.type === "human_input_required") {
-            waitingForHuman = true;
-            humanQuestion = event.question;
-            if (event.screenshot) latestScreenshot = event.screenshot;
-          }
-          if (event.type === "done") {
-            status = "completed";
-            currentAction = undefined;
-            currentThought = undefined;
-            waitingForHuman = false;
-          }
-          if (event.type === "error") {
-            status = "failed";
-            currentAction = undefined;
-            currentThought = undefined;
-            waitingForHuman = false;
-          }
-
-          return { ...prev, events, status, latestScreenshot, currentAction, currentThought, currentUrl, currentStep, waitingForHuman, humanQuestion };
-        });
-
-        if (event.type === "done" || event.type === "error" || event.type === "stream_end") {
-          es.close();
-          setIsRunning(false);
-        }
-      };
-
-      es.onerror = () => {
-        es.close();
-        setIsRunning(false);
-        setCurrentTask((prev) => prev ? { ...prev, status: "failed", waitingForHuman: false } : prev);
-      };
+      connectToTask(task_id);
     } catch {
       setCurrentTask({ id: "err", status: "failed", events: [{ type: "error", error: "Erro de conexão" }] });
       setIsRunning(false);
@@ -230,7 +299,15 @@ export default function BrowserAgentPage() {
           </div>
           <span className="font-semibold text-sm">Browser Agent</span>
         </div>
-        <span className="text-white/30 text-xs">Navega e age na web automaticamente</span>
+        <span className="text-white/30 text-xs flex-1">Navega e age na web automaticamente</span>
+        {currentTask && (
+          <button
+            onClick={clearTask}
+            className="text-xs px-3 py-1 rounded-md bg-white/8 hover:bg-white/15 text-white/60 hover:text-white transition-colors"
+          >
+            + Nova tarefa
+          </button>
+        )}
       </div>
 
       <div className="flex flex-1 overflow-hidden">
