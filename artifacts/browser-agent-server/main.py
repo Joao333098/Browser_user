@@ -547,6 +547,62 @@ async def _wait_for_human(task_id: str, question: str, queue: asyncio.Queue, scr
         return "(sem resposta)"
 
 
+async def _wait_for_page_stable(page, queue: asyncio.Queue, task_id: str, max_checks: int = 6, interval: float = 5.0) -> str:
+    """
+    Wait for the page to stop changing by comparing screenshots every `interval` seconds.
+    Emits progress events so the user sees the agent is actively checking.
+    Returns the final base64 JPEG screenshot once stable (or after timeout).
+    """
+    prev_screenshot = None
+    stable_count = 0
+
+    # First: try a short network-idle wait (non-blocking on failure)
+    try:
+        await asyncio.wait_for(
+            page.wait_for_load_state("networkidle"),
+            timeout=10.0,
+        )
+    except Exception:
+        pass  # Proceed even if networkidle times out
+
+    for check in range(1, max_checks + 1):
+        await asyncio.sleep(interval)
+
+        try:
+            shot_bytes = await page.screenshot(type="jpeg", quality=60)
+            shot_b64 = base64.b64encode(shot_bytes).decode()
+        except Exception:
+            shot_b64 = None
+
+        # Notify UI that we are still waiting
+        await queue.put({
+            "type": "step",
+            "step": f"aguardando_{check}",
+            "thought": f"Verificando se a página carregou (tentativa {check}/{max_checks})…",
+            "action": f"Aguardando página — verificação {check}/{max_checks}",
+            "url": page.url,
+            "screenshot": shot_b64,
+            "timestamp": datetime.now().isoformat(),
+        })
+
+        if shot_b64 is None:
+            prev_screenshot = None
+            continue
+
+        if prev_screenshot is not None and shot_b64 == prev_screenshot:
+            stable_count += 1
+            if stable_count >= 2:
+                # Two identical screenshots in a row → page is stable
+                return shot_b64
+        else:
+            stable_count = 0
+
+        prev_screenshot = shot_b64
+
+    # Return the last screenshot even if we never saw stability
+    return prev_screenshot or ""
+
+
 async def _skip_video(page) -> str:
     """Try multiple strategies to skip video on the page."""
     results = []
@@ -870,14 +926,31 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                 elif action == "navigate":
                     url = args[0] if args else ""
                     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    # Wait for page to fully stabilise — takes screenshot every 5 s
+                    await queue.put({
+                        "type": "step",
+                        "step": step,
+                        "thought": f"Navegando para {url} — aguardando a página carregar completamente…",
+                        "action": "Aguardando carregamento da página",
+                        "url": page.url,
+                        "screenshot": screenshot_b64,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    screenshot_b64 = await _wait_for_page_stable(page, queue, task_id, max_checks=6, interval=5.0)
 
                 elif action == "click":
                     # Robust click by visible text
                     text = args[0] if args else ""
+                    url_before = page.url
                     await _robust_click(page, text)
+                    # If a navigation was triggered, wait for the new page to stabilise
+                    await asyncio.sleep(1.0)
+                    if page.url != url_before:
+                        screenshot_b64 = await _wait_for_page_stable(page, queue, task_id, max_checks=4, interval=5.0)
 
                 elif action == "click_ref":
                     ref = args[0] if args else ""
+                    url_before = page.url
                     try:
                         await page.click(f"[data-agent-ref='{ref}']", timeout=8000)
                     except Exception:
@@ -888,13 +961,22 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                             await _robust_click(page, label)
                         else:
                             raise Exception(f"Ref {ref} not found in current page")
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1.0)
+                    if page.url != url_before:
+                        screenshot_b64 = await _wait_for_page_stable(page, queue, task_id, max_checks=4, interval=5.0)
+                    else:
+                        await asyncio.sleep(0.5)
 
                 elif action == "click_css":
                     # Click by CSS selector as fallback
                     sel = args[0] if args else ""
+                    url_before = page.url
                     await page.click(sel, timeout=10000)
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1.0)
+                    if page.url != url_before:
+                        screenshot_b64 = await _wait_for_page_stable(page, queue, task_id, max_checks=4, interval=5.0)
+                    else:
+                        await asyncio.sleep(0.5)
 
                 elif action == "search_web":
                     query = args[0] if args else ""
