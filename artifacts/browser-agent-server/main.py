@@ -269,7 +269,7 @@ async def _ask_llm(api_key: str, model: str, messages: list, retries: int = 5, u
                 json={
                     "model": model,
                     "messages": messages,
-                    "max_tokens": 512,
+                    "max_tokens": 1024,
                     "temperature": 0.2,
                 },
                 timeout=60,
@@ -682,13 +682,17 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             except Exception:
                 snapshot = "(could not get accessibility tree)"
 
-            # Screenshot — always
+            # Screenshot — always (JPEG at reduced size to keep tokens low)
             screenshot_b64 = None
             try:
-                screenshot_bytes = await page.screenshot(type="png")
+                screenshot_bytes = await page.screenshot(type="jpeg", quality=60, scale="css", clip={"x": 0, "y": 0, "width": 1280, "height": 720})
                 screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
             except Exception:
-                pass
+                try:
+                    screenshot_bytes = await page.screenshot(type="jpeg", quality=60)
+                    screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
+                except Exception:
+                    pass
 
             # Proactive CAPTCHA detection — intercept before LLM
             captcha = await _detect_captcha(page)
@@ -768,16 +772,15 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             try:
                 raw_response = await _ask_llm(api_key, model, _strip_images(messages))
             except Exception as e:
+                error_detail = str(e)
                 await queue.put({
-                    "type": "step",
-                    "step": step,
-                    "thought": f"Erro LLM: {e}",
-                    "action": "Falha permanente",
-                    "url": current_url,
-                    "screenshot": screenshot_b64,
+                    "type": "error",
+                    "error": f"Falha na chamada ao modelo '{model}': {error_detail}",
                     "timestamp": datetime.now().isoformat(),
                 })
-                break
+                tasks[task_id]["status"] = "failed"
+                tasks[task_id]["error"] = error_detail
+                return
 
             messages.append({"role": "assistant", "content": raw_response})
 
