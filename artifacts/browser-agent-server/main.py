@@ -608,9 +608,22 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             if len(messages) > 15:
                 messages = messages[:2] + messages[-12:]
 
+            # Strip images from all messages except the last user message
+            # Groq supports max 5 images — keep only the most recent screenshot
+            def _strip_images(msgs: list) -> list:
+                result = []
+                for i, msg in enumerate(msgs):
+                    is_last_user = (i == len(msgs) - 1 and msg["role"] == "user")
+                    if is_last_user or not isinstance(msg.get("content"), list):
+                        result.append(msg)
+                    else:
+                        text_only = [p for p in msg["content"] if p.get("type") == "text"]
+                        result.append({**msg, "content": text_only if text_only else msg["content"]})
+                return result
+
             # Ask LLM
             try:
-                raw_response = await _ask_llm(api_key, model, messages)
+                raw_response = await _ask_llm(api_key, model, _strip_images(messages))
             except Exception as e:
                 await queue.put({
                     "type": "step",
