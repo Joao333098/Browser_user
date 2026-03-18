@@ -2,6 +2,9 @@ import asyncio
 import base64
 import json
 import os
+import re
+import signal
+import socket
 import uuid
 from datetime import datetime
 
@@ -18,6 +21,41 @@ CHROMIUM_PATH = (
 )
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+
+
+def _free_port(port: int) -> None:
+    """Kill any process occupying the given port before startup."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                return  # port is already free
+        # Port is in use — find and kill the PID
+        with open("/proc/net/tcp") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                local = parts[1]
+                hex_port = local.split(":")[1] if ":" in local else ""
+                try:
+                    if int(hex_port, 16) == port:
+                        inode = parts[9]
+                        # find PID by inode
+                        for pid_dir in os.listdir("/proc"):
+                            if not pid_dir.isdigit():
+                                continue
+                            try:
+                                for fd in os.listdir(f"/proc/{pid_dir}/fd"):
+                                    link = os.readlink(f"/proc/{pid_dir}/fd/{fd}")
+                                    if f"socket:[{inode}]" in link:
+                                        os.kill(int(pid_dir), signal.SIGKILL)
+                                        return
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 SYSTEM_PROMPT = """You are a browser automation agent. You control a real web browser using Playwright.
 You also have access to web search to look up answers when needed.
@@ -278,8 +316,42 @@ async def stream_task(task_id: str):
     )
 
 
+async def _search_duckduckgo(query: str) -> str:
+    """Fetch real search results from DuckDuckGo HTML endpoint."""
+    try:
+        url = "https://html.duckduckgo.com/html/"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        resp = await _http_client.post(url, data={"q": query, "b": "", "kl": "us-en"}, headers=headers, timeout=15)
+        html = resp.text
+
+        # Extract result snippets
+        results = []
+        # Match result blocks: title, url, snippet
+        titles = re.findall(r'class="result__title"[^>]*>.*?<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>', html, re.DOTALL)
+        snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</(?:a|td)>', html, re.DOTALL)
+
+        for i, snippet in enumerate(snippets[:6]):
+            clean = re.sub(r'<[^>]+>', '', snippet).strip()
+            clean = re.sub(r'\s+', ' ', clean)
+            if clean:
+                title_text = ""
+                if i < len(titles):
+                    title_text = re.sub(r'<[^>]+>', '', titles[i][1]).strip()
+                    title_text = re.sub(r'\s+', ' ', title_text)
+                results.append(f"• {title_text}: {clean}" if title_text else f"• {clean}")
+
+        if results:
+            return f"Search results for '{query}':\n" + "\n".join(results)
+        return f"(No results found for '{query}')"
+    except Exception as e:
+        return f"(Search error: {e})"
+
+
 async def _ask_llm(api_key: str, model: str, messages: list, retries: int = 5, use_grounding: bool = False) -> str:
-    import re
     import sys
 
     for attempt in range(retries):
@@ -747,6 +819,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
         step = 0
         ref_store: dict = {}
         consecutive_waits = 0
+        last_screenshot_step = 0  # Track when we last sent a screenshot to the LLM
 
         while True:
             step += 1
@@ -821,11 +894,16 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                 })
                 continue
 
-            # Build LLM message — always include screenshot
+            # Build LLM message — include screenshot every 3 steps or on first step
+            # to avoid hitting Groq's token-per-minute limits on long tasks
+            send_screenshot = screenshot_b64 and (step - last_screenshot_step >= 3 or step == 1)
+            if send_screenshot:
+                last_screenshot_step = step
+
             user_content: list = [
                 {"type": "text", "text": f"Step {step}\nURL: {current_url}\n\n{clickable}\n\nSNAPSHOT:\n{snapshot}"}
             ]
-            if screenshot_b64:
+            if send_screenshot:
                 user_content.append({
                     "type": "image_url",
                     "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"},
@@ -962,6 +1040,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                         "timestamp": datetime.now().isoformat(),
                     })
                     screenshot_b64 = await _wait_for_page_stable(page, queue, task_id)
+                    last_screenshot_step = 0  # Force screenshot on next LLM call after navigation
 
                 elif action == "click":
                     # Robust click by visible text
@@ -972,6 +1051,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     await asyncio.sleep(1.0)
                     if page.url != url_before:
                         screenshot_b64 = await _wait_for_page_stable(page, queue, task_id)
+                        last_screenshot_step = 0
 
                 elif action == "click_ref":
                     ref = args[0] if args else ""
@@ -1002,8 +1082,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                         desc = ref_store.get(ref, "")
                         if desc:
                             # Extract text label from description like [button] "Label text"
-                            import re as _re
-                            m = _re.search(r'"([^"]+)"', desc)
+                            m = re.search(r'"([^"]+)"', desc)
                             label = m.group(1) if m else desc.split("]")[-1].strip()
                             if label:
                                 await _robust_click(page, label)
@@ -1016,6 +1095,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     await asyncio.sleep(1.0)
                     if page.url != url_before:
                         screenshot_b64 = await _wait_for_page_stable(page, queue, task_id)
+                        last_screenshot_step = 0
                     else:
                         await asyncio.sleep(0.5)
 
@@ -1027,23 +1107,25 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     await asyncio.sleep(1.0)
                     if page.url != url_before:
                         screenshot_b64 = await _wait_for_page_stable(page, queue, task_id)
+                        last_screenshot_step = 0
                     else:
                         await asyncio.sleep(0.5)
 
                 elif action == "search_web":
                     query = args[0] if args else ""
-                    # Make a dedicated grounding call to search the web
-                    search_messages = [
-                        {"role": "system", "content": "You are a helpful assistant with web search. Answer concisely based on search results."},
-                        {"role": "user", "content": f"Search the web and answer: {query}"}
-                    ]
-                    try:
-                        search_result = await _ask_llm(api_key, model, search_messages)
-                    except Exception as e:
-                        search_result = f"(web search failed: {e})"
+                    await queue.put({
+                        "type": "step",
+                        "step": step,
+                        "thought": f"Buscando na web: {query}",
+                        "action": f"Pesquisando no DuckDuckGo: {query}",
+                        "url": current_url,
+                        "screenshot": None,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    search_result = await _search_duckduckgo(query)
                     messages.append({
                         "role": "user",
-                        "content": f"Web search results for '{query}':\n{search_result}\n\nNow continue the task using this information."
+                        "content": f"{search_result}\n\nUse these real search results to answer the question and continue the task."
                     })
 
                 elif action == "fill":
@@ -1209,4 +1291,5 @@ async def mobile_proxy(path: str, request: Request):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
+    _free_port(port)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
