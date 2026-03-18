@@ -34,6 +34,10 @@ args = "API Server"
 task = "workflow.run"
 args = "Nova Chat"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Nova Mobile"
+
 [[workflows.workflow]]
 name = "Browser Agent Server"
 author = "agent"
@@ -69,6 +73,18 @@ outputType = "webview"
 task = "shell.exec"
 args = "PORT=23842 BASE_PATH=/ pnpm --filter @workspace/nova-chat run dev"
 waitForPort = 23842
+
+[[workflows.workflow]]
+name = "Nova Mobile"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "PORT=23843 BASE_PATH=/mobile/ pnpm --filter @workspace/nova-mobile run dev"
+waitForPort = 23843
+
+[workflows.workflow.metadata]
+outputType = "webview"
 
 [agent]
 stack = "PNPM_WORKSPACE"
