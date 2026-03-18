@@ -1,23 +1,22 @@
 import React from "react";
 import { Settings2, Zap, BrainCircuit, Hash, ChevronRight, RefreshCw } from "lucide-react";
-import type { NovaModel } from "@/hooks/use-chat-session";
+import type { ChatModel } from "@/hooks/use-chat-session";
 import type { TokenUsage } from "@workspace/api-client-react/src/generated/api.schemas";
 import { motion, AnimatePresence } from "framer-motion";
 
 interface SettingsPanelProps {
-  model: NovaModel;
-  setModel: (m: NovaModel) => void;
+  model: ChatModel;
+  setModel: (m: ChatModel) => void;
   systemPrompt: string;
   setSystemPrompt: (s: string) => void;
   tokenUsage: TokenUsage | null;
   onNewChat: () => void;
 }
 
-const MODELS: { id: NovaModel; name: string; desc: string }[] = [
-  { id: "nova-2-lite-v1", name: "Nova 2 Lite", desc: "Fast & balanced (Recommended)" },
-  { id: "nova-pro-v1", name: "Nova Pro", desc: "Maximum capability & reasoning" },
-  { id: "nova-lite-v1", name: "Nova Lite", desc: "Legacy balanced model" },
-  { id: "nova-micro-v1", name: "Nova Micro", desc: "Ultra-fast text generation" },
+const MODELS: { id: ChatModel; name: string; desc: string }[] = [
+  { id: "deepseek-v3.2", name: "DeepSeek V3.2", desc: "Reasoning and coding" },
+  { id: "gemini-3-flash-preview", name: "Gemini 3 Flash Preview", desc: "Fast multimodal responses" },
+  { id: "kimi-k2.5", name: "Kimi K2.5", desc: "Long-context general assistant" },
 ];
 
 export function SettingsPanel({

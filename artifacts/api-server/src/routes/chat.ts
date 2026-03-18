@@ -3,18 +3,9 @@ import { SendMessageBody } from "@workspace/api-zod";
 
 const router: IRouter = Router();
 
-const NOVA_BASE_URL = "https://api.nova.amazon.com/v1";
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
 
 router.post("/chat", async (req: Request, res: Response) => {
-  const NOVA_API_KEY = process.env.NOVA_API_KEY;
-  if (!NOVA_API_KEY) {
-    res.status(500).json({
-      error: "configuration_error",
-      message: "NOVA_API_KEY is not configured. Please add it to your secrets.",
-    });
-    return;
-  }
-
   const parseResult = SendMessageBody.safeParse(req.body);
   if (!parseResult.success) {
     res.status(400).json({
@@ -24,13 +15,12 @@ router.post("/chat", async (req: Request, res: Response) => {
     return;
   }
 
-  const { messages, model = "nova-2-lite-v1" } = parseResult.data;
+  const { messages, model = "deepseek-v3.2" } = parseResult.data;
 
   try {
-    const response = await fetch(`${NOVA_BASE_URL}/chat/completions`, {
+    const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${NOVA_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -42,47 +32,52 @@ router.post("/chat", async (req: Request, res: Response) => {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`Nova API error ${response.status}:`, errorText);
-      let errorData: { error?: { message?: string } } = {};
+      console.error(`Ollama API error ${response.status}:`, errorText);
+      let errorData: { error?: { message?: string } | string } = {};
       try {
         errorData = JSON.parse(errorText);
       } catch {
         errorData = {};
       }
+      const parsedError = typeof errorData?.error === "string"
+        ? errorData.error
+        : errorData?.error?.message;
       res.status(response.status).json({
-        error: "nova_api_error",
-        message: errorData?.error?.message || errorText || `Nova API returned status ${response.status}`,
+        error: "ollama_api_error",
+        message: parsedError || errorText || `Ollama API returned status ${response.status}`,
       });
       return;
     }
 
     const data = await response.json() as {
-      id: string;
       model: string;
-      choices: Array<{
-        message: { role: string; content: string };
-        finish_reason: string;
-      }>;
-      usage: {
-        prompt_tokens: number;
-        completion_tokens: number;
-        total_tokens: number;
-      };
+      created_at: string;
+      message: { role: string; content: string };
+      prompt_eval_count?: number;
+      eval_count?: number;
     };
 
-    const choice = data.choices[0];
+    const promptTokens = data.prompt_eval_count ?? 0;
+    const completionTokens = data.eval_count ?? 0;
+
     res.json({
-      id: data.id,
-      content: choice.message.content,
-      role: choice.message.role,
+      id: crypto.randomUUID(),
+      content: data.message.content,
+      role: data.message.role,
       model: data.model,
-      usage: data.usage,
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens,
+      },
     });
   } catch (err) {
-    console.error("Nova API error:", err);
+    console.error("Ollama API error:", err);
     res.status(500).json({
       error: "server_error",
-      message: err instanceof Error ? err.message : "Unknown error occurred",
+      message: err instanceof Error
+        ? `${err.message}. Ensure Ollama is running at ${OLLAMA_BASE_URL}.`
+        : "Unknown error occurred",
     });
   }
 });

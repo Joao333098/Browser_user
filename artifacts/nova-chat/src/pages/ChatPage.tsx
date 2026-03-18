@@ -42,7 +42,7 @@ export default function ChatPage() {
               <Sparkles className="w-5 h-5 text-primary" />
             </div>
             <h1 className="font-display font-bold text-xl tracking-tight bg-gradient-to-r from-white to-white/60 bg-clip-text text-transparent">
-              Nova Chat
+              Ollama Chat
             </h1>
             <span className="hidden md:inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-medium bg-white/5 border border-white/10 text-muted-foreground ml-2">
               {model}
@@ -69,7 +69,7 @@ export default function ChatPage() {
                   How can I help you today?
                 </h2>
                 <p className="text-muted-foreground max-w-md mb-8 leading-relaxed">
-                  I am powered by Amazon Nova, ready to assist with writing, coding, analysis, and creative tasks.
+                  I run locally with Ollama, ready to assist with writing, coding, analysis, and multimodal tasks.
                 </p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-2xl">
                   {[
@@ -103,7 +103,7 @@ export default function ChatPage() {
                     <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/20 border border-primary/30">
                       <Loader2 className="w-4 h-4 text-primary animate-spin" />
                     </div>
-                    <span className="text-sm font-medium animate-pulse">Nova is thinking...</span>
+                    <span className="text-sm font-medium animate-pulse">Model is thinking...</span>
                   </motion.div>
                 )}
                 
