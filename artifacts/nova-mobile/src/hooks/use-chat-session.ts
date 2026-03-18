@@ -15,7 +15,7 @@ export interface ParsedCommand {
   param?: string;
 }
 
-export type NovaModel = "deepseek-v3.2" | "gemini-3-flash-preview" | "kimi-k2.5";
+export type NovaModel = "llama-3.3-70b-versatile" | "llama-3.1-8b-instant" | "mixtral-8x7b-32768";
 
 function parseCommands(text: string): { cleanText: string; commands: ParsedCommand[] } {
   const commands: ParsedCommand[] = [];
@@ -49,7 +49,7 @@ interface UseChatSessionOptions {
 
 export function useChatSession({ browserContextForPrompt, onCommand }: UseChatSessionOptions = {}) {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [model, setModel] = useState<NovaModel>("deepseek-v3.2");
+  const [model, setModel] = useState<NovaModel>("llama-3.3-70b-versatile");
   const [systemPrompt, setSystemPrompt] = useState<string>(
     "Você é Nova, uma assistente de IA altamente capaz, útil e concisa. Responda sempre no mesmo idioma do usuário."
   );

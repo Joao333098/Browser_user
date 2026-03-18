@@ -8,11 +8,11 @@ export interface Message extends ChatMessage {
   timestamp: Date;
 }
 
-export type NovaModel = "deepseek-v3.2" | "gemini-3-flash-preview" | "kimi-k2.5";
+export type NovaModel = "llama-3.3-70b-versatile" | "llama-3.1-8b-instant" | "mixtral-8x7b-32768";
 
 export function useChatSession() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [model, setModel] = useState<NovaModel>("deepseek-v3.2");
+  const [model, setModel] = useState<NovaModel>("llama-3.3-70b-versatile");
   const [systemPrompt, setSystemPrompt] = useState<string>("You are a highly capable, helpful, and concise AI assistant.");
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const [isTyping, setIsTyping] = useState(false);

@@ -31,7 +31,8 @@ router.post("/chat", async (req: Request, res: Response) => {
   }
 
   const { baseUrl, apiKey, defaultModel } = getLLMConfig();
-  const { messages, model = defaultModel } = parseResult.data;
+  const { messages } = parseResult.data;
+  const model = defaultModel;
 
   try {
     const response = await fetch(`${baseUrl}/chat/completions`, {

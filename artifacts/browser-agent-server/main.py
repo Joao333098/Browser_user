@@ -2,14 +2,21 @@ import asyncio
 import base64
 import json
 import os
+import subprocess
+import sys
 import uuid
 from datetime import datetime
 
+import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
+
+MOBILE_VITE_PORT = 23870
+MOBILE_VITE_URL = f"http://localhost:{MOBILE_VITE_PORT}"
+_mobile_proc: subprocess.Popen | None = None
 
 CHROMIUM_PATH = (
     os.environ.get("CHROMIUM_PATH")
@@ -131,6 +138,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def start_mobile_vite():
+    global _mobile_proc
+    workspace = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = {**os.environ, "PORT": str(MOBILE_VITE_PORT), "BASE_PATH": "/mobile/"}
+    _mobile_proc = subprocess.Popen(
+        ["pnpm", "--filter", "@workspace/nova-mobile", "run", "dev"],
+        cwd=workspace,
+        env=env,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+    )
+
+
+@app.on_event("shutdown")
+async def stop_mobile_vite():
+    if _mobile_proc and _mobile_proc.poll() is None:
+        _mobile_proc.terminate()
+
+
+_http_client = httpx.AsyncClient(timeout=30.0)
 
 tasks: dict[str, dict] = {}
 task_queues: dict[str, asyncio.Queue] = {}
@@ -867,6 +897,31 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             pass
         human_input_futures.pop(task_id, None)
         await queue.put(None)
+
+
+@app.api_route("/mobile/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+async def mobile_proxy(path: str, request: Request):
+    target_url = f"{MOBILE_VITE_URL}/mobile/{path}"
+    if request.url.query:
+        target_url += f"?{request.url.query}"
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
+    try:
+        body = await request.body()
+        resp = await _http_client.request(
+            method=request.method,
+            url=target_url,
+            headers=headers,
+            content=body,
+            follow_redirects=True,
+        )
+        return Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            headers=dict(resp.headers),
+        )
+    except Exception:
+        await asyncio.sleep(0.5)
+        return Response(content=b"<html><body><p>A carregar...</p><script>setTimeout(()=>location.reload(),800)</script></body></html>", status_code=200, media_type="text/html")
 
 
 if __name__ == "__main__":

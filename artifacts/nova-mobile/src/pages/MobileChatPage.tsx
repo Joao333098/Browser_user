@@ -4,9 +4,9 @@ import { useChatSession, type ParsedCommand, type Message } from "@/hooks/use-ch
 import { useBrowser } from "@/context/BrowserContext";
 
 const MODELS = [
-  { id: "deepseek-v3.2", label: "DeepSeek V3.2" },
-  { id: "gemini-3-flash-preview", label: "Gemini 3 Flash" },
-  { id: "kimi-k2.5", label: "Kimi K2.5" },
+  { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B" },
+  { id: "llama-3.1-8b-instant", label: "Llama 3.1 8B" },
+  { id: "mixtral-8x7b-32768", label: "Mixtral 8x7B" },
 ];
 
 const SUGGESTIONS = [
@@ -184,7 +184,7 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
 
   const handleCommand = useCallback((cmd: ParsedCommand) => {
     if (cmd.type === "stop") stopTask();
-    if (cmd.type === "new_task" && cmd.param) runTask(cmd.param, "deepseek-v3.2");
+    if (cmd.type === "new_task" && cmd.param) runTask(cmd.param, "llama-3.3-70b-versatile");
     if (cmd.type === "respond" && cmd.param) respondToHuman(cmd.param);
   }, [stopTask, runTask, respondToHuman]);
 

@@ -14,9 +14,9 @@ interface SettingsPanelProps {
 }
 
 const MODELS: { id: NovaModel; name: string; desc: string }[] = [
-  { id: "deepseek-v3.2", name: "DeepSeek V3.2", desc: "Fast & balanced (Recommended)" },
-  { id: "gemini-3-flash-preview", name: "Gemini 3 Flash", desc: "Google's fast multimodal model" },
-  { id: "kimi-k2.5", name: "Kimi K2.5", desc: "Moonshot AI's reasoning model" },
+  { id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B", desc: "Poderoso & equilibrado (Recomendado)" },
+  { id: "llama-3.1-8b-instant", name: "Llama 3.1 8B", desc: "Ultra rápido & leve" },
+  { id: "mixtral-8x7b-32768", name: "Mixtral 8x7B", desc: "Contexto longo, respostas detalhadas" },
 ];
 
 export function SettingsPanel({
