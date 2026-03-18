@@ -60,7 +60,9 @@ Rules:
 - After navigation or page changes, the refs change — use snapshot to get fresh refs before clicking
 - If click_ref fails, fallback to click_css with a CSS selector
 - For pagination "Next page": look in ELEMENTS for the ref of the next-page link, then use click_ref
-- For CAPTCHA: use ask_human, the screenshot will be sent to the user automatically
+- CAPTCHA DETECTION IS CRITICAL: At every step, look carefully at the screenshot. If you see ANY of: reCAPTCHA checkbox, "I'm not a robot", hCaptcha, image CAPTCHA, text CAPTCHA, Cloudflare challenge, or any "prove you're human" element — immediately use ask_human. Never try to click or solve a CAPTCHA yourself.
+- When asking about CAPTCHA, say exactly: "CAPTCHA detectado. Por favor resolva e diga o texto (se for CAPTCHA de texto) ou confirme 'ok' (se for checkbox)."
+- After human responds, use fill or click_css to submit the CAPTCHA answer in the correct input field before continuing
 - When you don't know an answer to a quiz/question: use search_web to find it
 - When you see a video that must be watched: use skip_video to bypass it
 - Keep thought brief, description clear and human-friendly
@@ -533,6 +535,78 @@ async def _skip_video(page) -> str:
     return "; ".join(results)
 
 
+async def _detect_captcha(page) -> dict | None:
+    """Detect CAPTCHAs on the page, return type + best input selector."""
+    try:
+        return await page.evaluate("""
+        () => {
+            const bodyText = (document.body && document.body.innerText || '').toLowerCase();
+
+            // reCAPTCHA
+            if (document.querySelector('iframe[src*="recaptcha"]') ||
+                document.querySelector('.g-recaptcha') ||
+                document.querySelector('[data-sitekey]')) {
+                return { type: 'recaptcha', selector: null,
+                         description: 'Google reCAPTCHA — marque a caixa "Não sou um robô" e confirme com "ok"' };
+            }
+            // hCaptcha
+            if (document.querySelector('iframe[src*="hcaptcha"]') ||
+                document.querySelector('.h-captcha')) {
+                return { type: 'hcaptcha', selector: null,
+                         description: 'hCaptcha — complete o desafio e confirme com "ok"' };
+            }
+            // Cloudflare Turnstile
+            if (document.querySelector('iframe[src*="challenges.cloudflare"]') ||
+                document.querySelector('.cf-turnstile')) {
+                return { type: 'cloudflare', selector: null,
+                         description: 'Cloudflare challenge — aguarde ou complete e confirme com "ok"' };
+            }
+            // Text/image CAPTCHA — look for input near the word captcha
+            const allInputs = Array.from(document.querySelectorAll(
+                'input[type="text"], input[type="number"], input:not([type])'
+            ));
+            for (const inp of allInputs) {
+                const attrs = [
+                    inp.getAttribute('placeholder') || '',
+                    inp.getAttribute('aria-label') || '',
+                    inp.getAttribute('name') || '',
+                    inp.getAttribute('id') || '',
+                    inp.getAttribute('autocomplete') || '',
+                ].join(' ').toLowerCase();
+                if (attrs.includes('captcha') || attrs.includes('security code') ||
+                    attrs.includes('verification') || attrs.includes('verif')) {
+                    const sel = inp.id ? '#' + inp.id :
+                                inp.name ? 'input[name="' + inp.name + '"]' :
+                                'input[placeholder*="' + (inp.getAttribute('placeholder') || 'captcha') + '"]';
+                    return { type: 'text', selector: sel,
+                             description: 'CAPTCHA de texto — olhe a imagem no screenshot e digite a resposta' };
+                }
+            }
+            // Image CAPTCHA with img[src*=captcha] + nearby input
+            if (document.querySelector('img[src*="captcha"], img[alt*="captcha"], img[alt*="CAPTCHA"]')) {
+                const inp = document.querySelector('input[type="text"], input:not([type])');
+                if (inp) {
+                    const sel = inp.id ? '#' + inp.id : inp.name ? 'input[name="' + inp.name + '"]' : 'input[type="text"]';
+                    return { type: 'image', selector: sel,
+                             description: 'CAPTCHA de imagem — leia as letras/números na imagem e escreva aqui' };
+                }
+            }
+            // Generic text heuristic
+            if (bodyText.includes('captcha') || bodyText.includes('i am not a robot') ||
+                bodyText.includes('prove you are human') || bodyText.includes('verify you are human') ||
+                bodyText.includes('não sou um robô') || bodyText.includes('verificação')) {
+                const inp = document.querySelector('input[type="text"], input:not([type])');
+                const sel = inp && inp.id ? '#' + inp.id : inp && inp.name ? 'input[name="' + inp.name + '"]' : null;
+                return { type: 'unknown', selector: sel,
+                         description: 'CAPTCHA detectado — resolva conforme a imagem e responda' };
+            }
+            return null;
+        }
+        """)
+    except Exception:
+        return None
+
+
 async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: asyncio.Queue):
     from playwright.async_api import async_playwright
 
@@ -592,6 +666,52 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                 screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
             except Exception:
                 pass
+
+            # Proactive CAPTCHA detection — intercept before LLM
+            captcha = await _detect_captcha(page)
+            if captcha:
+                cap_type = captcha.get("type", "unknown")
+                cap_desc = captcha.get("description", "CAPTCHA detectado")
+                cap_sel  = captcha.get("selector")
+
+                await queue.put({
+                    "type": "step",
+                    "step": step,
+                    "thought": f"CAPTCHA detectado: {cap_desc}",
+                    "action": "Aguardando resolução do CAPTCHA pelo usuário",
+                    "url": current_url,
+                    "screenshot": screenshot_b64,
+                    "timestamp": datetime.now().isoformat(),
+                })
+
+                human_response = await _wait_for_human(
+                    task_id,
+                    f"🔒 {cap_desc}\n\nOlhe o screenshot e responda:\n"
+                    + ("— Digite o texto/código do CAPTCHA" if cap_type in ("text", "image", "unknown") else
+                       "— Resolva o CAPTCHA no seu navegador e escreva 'ok' quando terminar"),
+                    queue,
+                    screenshot_b64,
+                )
+
+                if cap_sel and cap_type in ("text", "image", "unknown") and human_response.strip().lower() not in ("ok", ""):
+                    try:
+                        await page.fill(cap_sel, human_response.strip(), timeout=6000)
+                        await asyncio.sleep(0.3)
+                        await page.keyboard.press("Enter")
+                        await asyncio.sleep(1)
+                    except Exception as e:
+                        messages.append({
+                            "role": "user",
+                            "content": f"Tentei preencher o CAPTCHA ({cap_sel}) com '{human_response}' mas ocorreu erro: {e}. Tente usar fill ou click_css para submeter."
+                        })
+
+                messages.append({
+                    "role": "user",
+                    "content": f"CAPTCHA resolvido pelo usuário. Resposta: '{human_response}'. "
+                               + (f"Já preenchi o campo '{cap_sel}' e pressionei Enter. " if cap_sel else "")
+                               + "Continue a tarefa do ponto onde parou."
+                })
+                continue
 
             # Build LLM message — always include screenshot
             user_content: list = [
