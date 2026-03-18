@@ -65,6 +65,8 @@ Rules:
 - After human responds, use fill or click_css to submit the CAPTCHA answer in the correct input field before continuing
 - When you don't know an answer to a quiz/question: use search_web to find it
 - When you see a video that must be watched: use skip_video to bypass it
+- NEVER wait more than once in a row. If you used wait and the page still looks empty or incomplete, DO NOT wait again. Instead, look at the ELEMENTS list and SNAPSHOT to see what IS on the page and proceed immediately — even if it looks incomplete. Use snapshot to get fresh context, then act.
+- If the page appears empty after a wait, check the ELEMENTS list carefully — interactive elements may already be present even if the page looks blank visually. Proceed with the task using whatever elements are available.
 - Keep thought brief, description clear and human-friendly
 - ONLY output valid JSON — no extra text"""
 
@@ -722,6 +724,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
 
         step = 0
         ref_store: dict = {}
+        consecutive_waits = 0
 
         while True:
             step += 1
@@ -1065,6 +1068,12 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                 elif action == "wait":
                     ms = int(args[0]) if args else 1000
                     await asyncio.sleep(ms / 1000)
+                    # Take a fresh screenshot after waiting so LLM sees current state
+                    try:
+                        wait_shot_bytes = await page.screenshot(type="jpeg", quality=60)
+                        screenshot_b64 = base64.b64encode(wait_shot_bytes).decode()
+                    except Exception:
+                        pass
 
                 elif action == "wait_text":
                     text = args[0] if args else ""
@@ -1090,6 +1099,24 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     "url": current_url,
                     "screenshot": screenshot_b64,
                     "timestamp": datetime.now().isoformat(),
+                })
+
+            # Track consecutive waits and break the loop if stuck
+            if action == "wait":
+                consecutive_waits += 1
+            else:
+                consecutive_waits = 0
+
+            if consecutive_waits >= 2:
+                consecutive_waits = 0
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "AVISO DO SISTEMA: Você esperou várias vezes seguidas. "
+                        "NÃO espere mais. Olhe os ELEMENTS e o SNAPSHOT da próxima iteração e PROSSIGA IMEDIATAMENTE com a tarefa, "
+                        "mesmo que a página pareça vazia ou incompleta. "
+                        "Use os elementos disponíveis ou tente fill/click_css diretamente."
+                    )
                 })
 
         tasks[task_id]["status"] = "completed"
