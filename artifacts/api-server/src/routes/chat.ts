@@ -3,18 +3,11 @@ import { SendMessageBody } from "@workspace/api-zod";
 
 const router: IRouter = Router();
 
-const NOVA_BASE_URL = "https://api.nova.amazon.com/v1";
+function getOllamaBaseUrl(): string {
+  return (process.env.OLLAMA_URL ?? "http://localhost:11434").replace(/\/$/, "") + "/v1";
+}
 
 router.post("/chat", async (req: Request, res: Response) => {
-  const NOVA_API_KEY = process.env.NOVA_API_KEY;
-  if (!NOVA_API_KEY) {
-    res.status(500).json({
-      error: "configuration_error",
-      message: "NOVA_API_KEY is not configured. Please add it to your secrets.",
-    });
-    return;
-  }
-
   const parseResult = SendMessageBody.safeParse(req.body);
   if (!parseResult.success) {
     res.status(400).json({
@@ -24,14 +17,15 @@ router.post("/chat", async (req: Request, res: Response) => {
     return;
   }
 
-  const { messages, model = "nova-2-lite-v1" } = parseResult.data;
+  const { messages, model = "deepseek-v3.2" } = parseResult.data;
+  const ollamaBaseUrl = getOllamaBaseUrl();
 
   try {
-    const response = await fetch(`${NOVA_BASE_URL}/chat/completions`, {
+    const response = await fetch(`${ollamaBaseUrl}/chat/completions`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${NOVA_API_KEY}`,
         "Content-Type": "application/json",
+        Authorization: "Bearer ollama",
       },
       body: JSON.stringify({
         model,
@@ -42,7 +36,7 @@ router.post("/chat", async (req: Request, res: Response) => {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`Nova API error ${response.status}:`, errorText);
+      console.error(`Ollama API error ${response.status}:`, errorText);
       let errorData: { error?: { message?: string } } = {};
       try {
         errorData = JSON.parse(errorText);
@@ -50,8 +44,8 @@ router.post("/chat", async (req: Request, res: Response) => {
         errorData = {};
       }
       res.status(response.status).json({
-        error: "nova_api_error",
-        message: errorData?.error?.message || errorText || `Nova API returned status ${response.status}`,
+        error: "ollama_api_error",
+        message: errorData?.error?.message || errorText || `Ollama returned status ${response.status}`,
       });
       return;
     }
@@ -78,13 +72,34 @@ router.post("/chat", async (req: Request, res: Response) => {
       model: data.model,
       usage: data.usage,
     });
-  } catch (err) {
-    console.error("Nova API error:", err);
+  } catch (err: any) {
+    console.error("Ollama API error:", err);
+
+    const isConnectionRefused =
+      err?.cause?.code === "ECONNREFUSED" || err?.message?.includes("fetch failed");
+
+    if (isConnectionRefused) {
+      const ollamaUrl = process.env.OLLAMA_URL ?? "http://localhost:11434";
+      res.status(503).json({
+        error: "ollama_not_reachable",
+        message: `Não foi possível conectar ao Ollama em ${ollamaUrl}. Para usar o app: (1) Instale o Ollama em ollama.com, (2) Exponha-o via ngrok ou similar, (3) Configure a variável OLLAMA_URL com o endereço público. Exemplo: https://abc123.ngrok-free.app`,
+      });
+      return;
+    }
+
     res.status(500).json({
       error: "server_error",
       message: err instanceof Error ? err.message : "Unknown error occurred",
     });
   }
+});
+
+router.get("/chat/config", (_req: Request, res: Response) => {
+  const ollamaUrl = process.env.OLLAMA_URL ?? "http://localhost:11434";
+  res.json({
+    ollamaUrl,
+    models: ["deepseek-v3.2", "gemini-3-flash-preview", "kimi-k2.5"],
+  });
 });
 
 export default router;

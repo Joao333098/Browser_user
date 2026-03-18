@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
+import type { Plugin } from "vite";
 
 const rawPort = process.env.PORT;
 const port = rawPort && !Number.isNaN(Number(rawPort)) && Number(rawPort) > 0
@@ -11,9 +12,26 @@ const port = rawPort && !Number.isNaN(Number(rawPort)) && Number(rawPort) > 0
 
 const basePath = process.env.BASE_PATH ?? "/mobile/";
 
+function healthCheckPlugin(): Plugin {
+  return {
+    name: "health-check",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url === "/" || req.url === "/__health") {
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          res.end("ok");
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig({
   base: basePath,
   plugins: [
+    healthCheckPlugin(),
     react(),
     tailwindcss(),
     runtimeErrorOverlay(),

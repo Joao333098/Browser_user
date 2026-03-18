@@ -8,12 +8,12 @@ export interface Message extends ChatMessage {
   timestamp: Date;
 }
 
-export type NovaModel = "nova-2-lite-v1" | "nova-lite-v1" | "nova-pro-v1" | "nova-micro-v1";
+export type NovaModel = "deepseek-v3.2" | "gemini-3-flash-preview" | "kimi-k2.5";
 
 export function useChatSession() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [model, setModel] = useState<NovaModel>("nova-2-lite-v1");
-  const [systemPrompt, setSystemPrompt] = useState<string>("You are Nova, a highly capable, helpful, and concise AI assistant.");
+  const [model, setModel] = useState<NovaModel>("deepseek-v3.2");
+  const [systemPrompt, setSystemPrompt] = useState<string>("You are a highly capable, helpful, and concise AI assistant.");
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const [isTyping, setIsTyping] = useState(false);
   

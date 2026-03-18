@@ -1,0 +1,70 @@
+Ao invez de usa nova ai quero usa ollama sem api quero que la posso seleciona qual quero como https://ollama.com/library/deepseek-v3.2
+
+https://ollama.com/library/gemini-3-flash-preview
+
+https://ollama.com/library/kimi-k2.5
+
+so esses tres por enquanto mais vaiVou abrir essa URL para ver como funciona o envio de imagens no Qwen3-VL.
+A página do Ollama mostra as informações do modelo Qwen3-VL, mas não detalha especificamente como enviar imagens. Deixe-me explicar como funciona o envio de imagens no Ollama com modelos de visão (VL - Vision Language):
+Como Enviar Imagens no Ollama com Qwen3-VL
+1.  Via Linha de Comando (CLI)
+Modo interativo - arraste ou cole a imagem
+ollama run qwen3-vl:8b
+Ou especifique a imagem diretamente
+ollama run qwen3-vl:8b "Descreva esta imagem" --image /caminho/para/imagem.jpg
+2.  Via API (Python/JavaScript)
+Python:
+import ollama
+response = ollama.chat(
+model='qwen3-vl:8b',
+messages=[{
+'role': 'user',
+'content': 'O que você vê nesta imagem?',
+'images': ['/caminho/para/imagem.jpg']  # ou URL da imagem
+}]
+)
+print(response['message']['content'])
+JavaScript:
+const ollama = require('ollama');
+const response = await ollama.chat({
+model: 'qwen3-vl:8b',
+messages: [{
+role: 'user',
+content: 'Descreva esta imagem',
+images: ['./imagem.png']  // caminho da imagem
+}]
+});
+console.log(response.message.content);
+3.  Via HTTP API (curl)
+curl -X POST http://localhost:11434/api/chat 
+  -H "Content-Type: application/json" 
+  -d '{
+"model": "qwen3-vl:8b",
+"messages": [{
+"role": "user",
+"content": "O que tem nesta imagem?",
+"images": ["base64_encoded_image_data"]
+}]
+}'
+4.  Formatos de Imagem Suportados
+•  Arquivos locais: Caminho absoluto ou relativo
+•  Base64: Codifique a imagem em base64 e envie como string
+•  URLs: Algumas implementações suportam URLs diretas
+5.  Requisitos Importantes
+•  ✅ Ollama 0.12.7+ é obrigatório para Qwen3-VL
+•  ✅ O modelo precisa ser baixado primeiro: ollama pull qwen3-vl:8b
+•  ✅ Imagens são enviadas no campo images da mensagem
+Exemplo Completo (Python com múltiplas imagens):
+import ollama
+response = ollama.chat(
+model='qwen3-vl:8b',
+messages=[{
+'role': 'user',
+'content': 'Compare estas duas imagens:',
+'images': [
+'/caminho/imagem1.jpg',
+'/caminho/imagem2.png'
+]
+}]
+)
+O Qwen3-VL suporta múltiplas imagens por conversa, vídeos (até 2 horas) e tem capacidades avançadas de agente visual (pode interagir com interfaces GUI).

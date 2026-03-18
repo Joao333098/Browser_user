@@ -69,7 +69,7 @@ export default function ChatPage() {
                   How can I help you today?
                 </h2>
                 <p className="text-muted-foreground max-w-md mb-8 leading-relaxed">
-                  I am powered by Amazon Nova, ready to assist with writing, coding, analysis, and creative tasks.
+                  I am powered by Ollama, ready to assist with writing, coding, analysis, and creative tasks.
                 </p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-2xl">
                   {[

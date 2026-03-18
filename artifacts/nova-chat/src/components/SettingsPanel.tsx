@@ -14,10 +14,9 @@ interface SettingsPanelProps {
 }
 
 const MODELS: { id: NovaModel; name: string; desc: string }[] = [
-  { id: "nova-2-lite-v1", name: "Nova 2 Lite", desc: "Fast & balanced (Recommended)" },
-  { id: "nova-pro-v1", name: "Nova Pro", desc: "Maximum capability & reasoning" },
-  { id: "nova-lite-v1", name: "Nova Lite", desc: "Legacy balanced model" },
-  { id: "nova-micro-v1", name: "Nova Micro", desc: "Ultra-fast text generation" },
+  { id: "deepseek-v3.2", name: "DeepSeek V3.2", desc: "Fast & balanced (Recommended)" },
+  { id: "gemini-3-flash-preview", name: "Gemini 3 Flash", desc: "Google's fast multimodal model" },
+  { id: "kimi-k2.5", name: "Kimi K2.5", desc: "Moonshot AI's reasoning model" },
 ];
 
 export function SettingsPanel({
