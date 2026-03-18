@@ -276,7 +276,7 @@ export default function BrowserAgentPage() {
 
       if (!res.ok) {
         const err = await res.json();
-        setCurrentTask({ id: "err", status: "failed", events: [{ type: "error", error: err.message || "Falha ao iniciar tarefa" }] });
+        setCurrentTask({ id: "err", status: "failed", events: [{ type: "error", error: err.detail || err.message || "Falha ao iniciar tarefa" }] });
         setIsRunning(false);
         return;
       }

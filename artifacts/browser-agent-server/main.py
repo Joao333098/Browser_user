@@ -142,8 +142,11 @@ _http_client = httpx.AsyncClient(timeout=30.0)
 
 tasks: dict[str, dict] = {}
 task_queues: dict[str, asyncio.Queue] = {}
+task_asyncio_tasks: dict[str, asyncio.Task] = {}
 # human_input_futures: task_id -> asyncio.Future waiting for human response
 human_input_futures: dict[str, asyncio.Future] = {}
+
+MAX_CONCURRENT_SESSIONS = 2
 
 
 class RunRequest(BaseModel):
@@ -178,6 +181,10 @@ async def run_task(request: RunRequest):
     if not groq_api_key:
         raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured.")
 
+    running_count = sum(1 for t in tasks.values() if t["status"] == "running")
+    if running_count >= MAX_CONCURRENT_SESSIONS:
+        raise HTTPException(status_code=429, detail="Limite de sessões atingido. Aguarde a conclusão das tarefas em andamento.")
+
     task_id = str(uuid.uuid4())[:8]
     queue: asyncio.Queue = asyncio.Queue()
     task_queues[task_id] = queue
@@ -190,8 +197,25 @@ async def run_task(request: RunRequest):
         "result": None,
         "error": None,
     }
-    asyncio.create_task(_run_agent(task_id, request.task, request.model, groq_api_key, queue))
+    t = asyncio.create_task(_run_agent(task_id, request.task, request.model, groq_api_key, queue))
+    task_asyncio_tasks[task_id] = t
     return {"task_id": task_id}
+
+
+@app.post("/tasks/{task_id}/stop")
+async def stop_task(task_id: str):
+    """Cancel a running browser agent task."""
+    t = task_asyncio_tasks.get(task_id)
+    if t and not t.done():
+        t.cancel()
+    if task_id in tasks:
+        tasks[task_id]["status"] = "failed"
+        tasks[task_id]["error"] = "Cancelado pelo usuário."
+    q = task_queues.get(task_id)
+    if q:
+        await q.put({"type": "error", "error": "Cancelado pelo usuário.", "timestamp": datetime.now().isoformat()})
+        await q.put(None)
+    return {"ok": True}
 
 
 @app.post("/tasks/{task_id}/respond")
