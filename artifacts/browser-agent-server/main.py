@@ -547,7 +547,7 @@ async def _wait_for_human(task_id: str, question: str, queue: asyncio.Queue, scr
         return "(sem resposta)"
 
 
-async def _wait_for_page_stable(page, queue: asyncio.Queue, task_id: str, max_checks: int = 6, interval: float = 5.0) -> str:
+async def _wait_for_page_stable(page, queue: asyncio.Queue, task_id: str, max_checks: int = 5, interval: float = 1.5) -> str:
     """
     Wait for the page to stop changing by comparing screenshots every `interval` seconds.
     Emits progress events so the user sees the agent is actively checking.
@@ -560,7 +560,7 @@ async def _wait_for_page_stable(page, queue: asyncio.Queue, task_id: str, max_ch
     try:
         await asyncio.wait_for(
             page.wait_for_load_state("networkidle"),
-            timeout=10.0,
+            timeout=3.0,
         )
     except Exception:
         pass  # Proceed even if networkidle times out
@@ -591,8 +591,8 @@ async def _wait_for_page_stable(page, queue: asyncio.Queue, task_id: str, max_ch
 
         if prev_screenshot is not None and shot_b64 == prev_screenshot:
             stable_count += 1
-            if stable_count >= 2:
-                # Two identical screenshots in a row → page is stable
+            if stable_count >= 1:
+                # One identical screenshot in a row → page is stable
                 return shot_b64
         else:
             stable_count = 0
@@ -936,7 +936,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                         "screenshot": screenshot_b64,
                         "timestamp": datetime.now().isoformat(),
                     })
-                    screenshot_b64 = await _wait_for_page_stable(page, queue, task_id, max_checks=6, interval=5.0)
+                    screenshot_b64 = await _wait_for_page_stable(page, queue, task_id)
 
                 elif action == "click":
                     # Robust click by visible text
@@ -946,24 +946,51 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     # If a navigation was triggered, wait for the new page to stabilise
                     await asyncio.sleep(1.0)
                     if page.url != url_before:
-                        screenshot_b64 = await _wait_for_page_stable(page, queue, task_id, max_checks=4, interval=5.0)
+                        screenshot_b64 = await _wait_for_page_stable(page, queue, task_id)
 
                 elif action == "click_ref":
                     ref = args[0] if args else ""
                     url_before = page.url
+                    clicked = False
+                    # Strategy 1: data-agent-ref attribute (most reliable)
                     try:
-                        await page.click(f"[data-agent-ref='{ref}']", timeout=8000)
+                        await page.click(f"[data-agent-ref='{ref}']", timeout=5000)
+                        clicked = True
                     except Exception:
-                        # Fallback: use ref description to click by text
+                        pass
+                    if not clicked:
+                        # Strategy 2: JS direct click via data-agent-ref (catches shadow DOM edge cases)
+                        try:
+                            found = await page.evaluate(f"""
+                                () => {{
+                                    const el = document.querySelector("[data-agent-ref='{ref}']");
+                                    if (el) {{ el.scrollIntoView({{block:'center',behavior:'instant'}}); el.click(); return true; }}
+                                    return false;
+                                }}
+                            """)
+                            if found:
+                                clicked = True
+                        except Exception:
+                            pass
+                    if not clicked:
+                        # Strategy 3: use stored description to extract text and click robustly
                         desc = ref_store.get(ref, "")
                         if desc:
-                            label = desc.split('"')[1] if '"' in desc else desc
-                            await _robust_click(page, label)
-                        else:
-                            raise Exception(f"Ref {ref} not found in current page")
+                            # Extract text label from description like [button] "Label text"
+                            import re as _re
+                            m = _re.search(r'"([^"]+)"', desc)
+                            label = m.group(1) if m else desc.split("]")[-1].strip()
+                            if label:
+                                await _robust_click(page, label)
+                                clicked = True
+                        if not clicked:
+                            raise Exception(
+                                f"Could not click '{ref}' after all strategies. "
+                                f"TIP: Use click_css with a CSS selector or use snapshot to get fresh refs."
+                            )
                     await asyncio.sleep(1.0)
                     if page.url != url_before:
-                        screenshot_b64 = await _wait_for_page_stable(page, queue, task_id, max_checks=4, interval=5.0)
+                        screenshot_b64 = await _wait_for_page_stable(page, queue, task_id)
                     else:
                         await asyncio.sleep(0.5)
 
@@ -974,7 +1001,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     await page.click(sel, timeout=10000)
                     await asyncio.sleep(1.0)
                     if page.url != url_before:
-                        screenshot_b64 = await _wait_for_page_stable(page, queue, task_id, max_checks=4, interval=5.0)
+                        screenshot_b64 = await _wait_for_page_stable(page, queue, task_id)
                     else:
                         await asyncio.sleep(0.5)
 
