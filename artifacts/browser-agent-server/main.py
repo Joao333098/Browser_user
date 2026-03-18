@@ -645,58 +645,49 @@ async def _wait_for_human(task_id: str, question: str, queue: asyncio.Queue, scr
 
 async def _wait_for_page_stable(page, queue: asyncio.Queue, task_id: str, max_checks: int = 5, interval: float = 1.5) -> str:
     """
-    Wait for the page to stop changing by comparing screenshots every `interval` seconds.
-    Emits progress events so the user sees the agent is actively checking.
-    Returns the final base64 JPEG screenshot once stable (or after timeout).
+    Wait for the page to finish loading using Playwright's built-in load states.
+    Falls back gracefully if the page redirects or times out.
+    Returns a base64 JPEG screenshot of the final page state.
     """
-    prev_screenshot = None
-    stable_count = 0
-
-    # First: try a short network-idle wait (non-blocking on failure)
+    # 1. Wait for DOM to be ready
     try:
-        await asyncio.wait_for(
-            page.wait_for_load_state("networkidle"),
-            timeout=3.0,
-        )
+        await asyncio.wait_for(page.wait_for_load_state("load"), timeout=8.0)
     except Exception:
-        pass  # Proceed even if networkidle times out
+        pass
 
-    for check in range(1, max_checks + 1):
-        await asyncio.sleep(interval)
+    # 2. Wait for network to go quiet (catches XHR/fetch after DOM load)
+    try:
+        await asyncio.wait_for(page.wait_for_load_state("networkidle"), timeout=5.0)
+    except Exception:
+        pass
 
+    # 3. Extra small pause for JS-rendered content
+    await asyncio.sleep(1.0)
+
+    # 4. Take one screenshot of the final state
+    shot_b64 = ""
+    try:
+        shot_bytes = await page.screenshot(type="jpeg", quality=55, scale="css",
+                                            clip={"x": 0, "y": 0, "width": 1280, "height": 720})
+        shot_b64 = base64.b64encode(shot_bytes).decode()
+    except Exception:
         try:
-            shot_bytes = await page.screenshot(type="jpeg", quality=60)
+            shot_bytes = await page.screenshot(type="jpeg", quality=55)
             shot_b64 = base64.b64encode(shot_bytes).decode()
         except Exception:
-            shot_b64 = None
+            pass
 
-        # Notify UI that we are still waiting
-        await queue.put({
-            "type": "step",
-            "step": f"aguardando_{check}",
-            "thought": f"Verificando se a página carregou (tentativa {check}/{max_checks})…",
-            "action": f"Aguardando página — verificação {check}/{max_checks}",
-            "url": page.url,
-            "screenshot": shot_b64,
-            "timestamp": datetime.now().isoformat(),
-        })
+    await queue.put({
+        "type": "step",
+        "step": "page_loaded",
+        "thought": "Página carregada — pronto para continuar.",
+        "action": f"Página carregada: {page.url}",
+        "url": page.url,
+        "screenshot": shot_b64,
+        "timestamp": datetime.now().isoformat(),
+    })
 
-        if shot_b64 is None:
-            prev_screenshot = None
-            continue
-
-        if prev_screenshot is not None and shot_b64 == prev_screenshot:
-            stable_count += 1
-            if stable_count >= 1:
-                # One identical screenshot in a row → page is stable
-                return shot_b64
-        else:
-            stable_count = 0
-
-        prev_screenshot = shot_b64
-
-    # Return the last screenshot even if we never saw stability
-    return prev_screenshot or ""
+    return shot_b64
 
 
 async def _skip_video(page) -> str:
