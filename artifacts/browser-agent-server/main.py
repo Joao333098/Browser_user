@@ -641,10 +641,9 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
         ]
 
         step = 0
-        max_steps = 300
         ref_store: dict = {}
 
-        while step < max_steps:
+        while True:
             step += 1
 
             current_url = page.url
@@ -958,10 +957,10 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                 })
 
         tasks[task_id]["status"] = "completed"
-        tasks[task_id]["result"] = "Limite de passos atingido."
+        tasks[task_id]["result"] = "Tarefa concluída."
         await queue.put({
             "type": "done",
-            "result": "Limite de passos atingido.",
+            "result": "Tarefa concluída.",
             "steps": step,
             "timestamp": datetime.now().isoformat(),
         })

@@ -197,7 +197,11 @@ export default function BrowserAgentPage() {
     es.onerror = () => {
       es.close();
       setIsRunning(false);
-      setCurrentTask((prev) => prev ? { ...prev, waitingForHuman: false } : prev);
+      setCurrentTask((prev) => prev ? {
+        ...prev,
+        status: prev.status === "running" ? "failed" : prev.status,
+        waitingForHuman: false,
+      } : prev);
     };
   };
 
