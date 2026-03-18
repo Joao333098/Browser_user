@@ -48,8 +48,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "PORT=8082 BASE_PATH=/mobile/ pnpm --filter @workspace/nova-mobile run dev"
-waitForPort = 8082
+args = "PORT=23870 BASE_PATH=/mobile/ node artifacts/nova-mobile/dev-server.mjs"
 
 [workflows.workflow.metadata]
 outputType = "console"
