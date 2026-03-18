@@ -9,10 +9,11 @@ import http from "http";
 import { spawn } from "child_process";
 
 const PROXY_PORT = Number(process.env.PORT ?? 23870);
-const VITE_PORT  = PROXY_PORT + 1;          // e.g. 23871 or 23844
+const VITE_PORT  = PROXY_PORT + 1;
 const BASE_PATH  = process.env.BASE_PATH ?? "/mobile/";
 
 let viteReady = false;
+let viteProcess = null;
 
 // ── 1. Open proxy immediately so health-check sees port open ──────────────
 const server = http.createServer((req, res) => {
@@ -40,37 +41,61 @@ const server = http.createServer((req, res) => {
   req.pipe(proxy, { end: true });
 });
 
-server.listen(PROXY_PORT, "0.0.0.0", () => {
-  console.log(`\n  Proxy :${PROXY_PORT} → Vite :${VITE_PORT} (${BASE_PATH})\n`);
-});
+function spawnVite() {
+  viteProcess = spawn(
+    "pnpm",
+    ["exec", "vite", "--config", "vite.config.ts", "--host", "0.0.0.0",
+     "--port", String(VITE_PORT), "--strictPort"],
+    {
+      env: { ...process.env, PORT: String(VITE_PORT), BASE_PATH },
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+      cwd: import.meta.dirname,
+    }
+  );
 
-// ── 2. Spawn Vite on internal port ────────────────────────────────────────
-const vite = spawn(
-  "pnpm",
-  ["exec", "vite", "--config", "vite.config.ts", "--host", "0.0.0.0",
-   "--port", String(VITE_PORT), "--strictPort"],
-  {
-    env: { ...process.env, PORT: String(VITE_PORT), BASE_PATH },
-    stdio: ["ignore", "pipe", "pipe"],
-    shell: false,
-    cwd: import.meta.dirname,
-  }
-);
+  viteProcess.stdout.on("data", (chunk) => {
+    process.stdout.write(chunk);
+    if (!viteReady && chunk.toString().includes("ready in")) {
+      viteReady = true;
+      console.log(`\n  → Proxy now forwarding :${PROXY_PORT} → :${VITE_PORT}\n`);
+    }
+  });
 
-vite.stdout.on("data", (chunk) => {
-  process.stdout.write(chunk);
-  if (!viteReady && chunk.toString().includes("ready in")) {
-    viteReady = true;
-    console.log(`\n  → Proxy now forwarding :${PROXY_PORT} → :${VITE_PORT}\n`);
-  }
-});
+  viteProcess.stderr.on("data", (chunk) => process.stderr.write(chunk));
 
-vite.stderr.on("data", (chunk) => process.stderr.write(chunk));
+  viteProcess.on("exit", (code) => {
+    server.close();
+    process.exit(code ?? 1);
+  });
+}
 
-vite.on("exit", (code) => {
+function startListening(retries = 15, delay = 1000) {
+  server.once("error", (err) => {
+    if (err.code === "EADDRINUSE" && retries > 0) {
+      console.log(`Port ${PROXY_PORT} in use, retrying in ${delay}ms... (${retries} retries left)`);
+      setTimeout(() => startListening(retries - 1, delay), delay);
+    } else {
+      console.error("Server error:", err.message);
+      process.exit(1);
+    }
+  });
+
+  server.listen(PROXY_PORT, "0.0.0.0", () => {
+    console.log(`\n  Proxy :${PROXY_PORT} → Vite :${VITE_PORT} (${BASE_PATH})\n`);
+    spawnVite();
+  });
+}
+
+startListening();
+
+process.on("SIGTERM", () => {
+  if (viteProcess) viteProcess.kill("SIGTERM");
   server.close();
-  process.exit(code ?? 1);
+  process.exit(0);
 });
-
-process.on("SIGTERM", () => { vite.kill("SIGTERM"); server.close(); process.exit(0); });
-process.on("SIGINT",  () => { vite.kill("SIGTERM"); server.close(); process.exit(0); });
+process.on("SIGINT", () => {
+  if (viteProcess) viteProcess.kill("SIGTERM");
+  server.close();
+  process.exit(0);
+});
