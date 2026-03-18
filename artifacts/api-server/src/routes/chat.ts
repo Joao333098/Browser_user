@@ -93,10 +93,9 @@ router.post("/chat", async (req: Request, res: Response) => {
       err?.cause?.code === "ECONNREFUSED" || err?.message?.includes("fetch failed");
 
     if (isConnectionRefused) {
-      const ollamaUrl = process.env.OLLAMA_URL ?? "http://localhost:11434";
       res.status(503).json({
         error: "llm_not_reachable",
-        message: `Não foi possível conectar ao Ollama em ${ollamaUrl}. Para usar o app: (1) Instale o Ollama em ollama.com, (2) Exponha-o via ngrok ou similar, (3) Configure a variável OLLAMA_URL com o endereço público. Exemplo: https://abc123.ngrok-free.app`,
+        message: `Não foi possível conectar ao provedor de IA. Verifique se a variável GROQ_API_KEY está configurada corretamente.`,
       });
       return;
     }

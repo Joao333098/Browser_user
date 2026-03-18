@@ -6,9 +6,8 @@ import {
 import { useBrowser, type AgentEvent } from "@/context/BrowserContext";
 
 const MODELS = [
-  { id: "nova-pro-v1", label: "Nova Pro" },
-  { id: "nova-2-lite-v1", label: "Nova 2 Lite" },
-  { id: "nova-lite-v1", label: "Nova Lite" },
+  { id: "meta-llama/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout" },
+  { id: "meta-llama/llama-4-maverick-17b-128e-instruct", label: "Llama 4 Maverick" },
 ];
 
 const QUICK_EXAMPLES = [
@@ -345,7 +344,7 @@ function TaskSheet({
   onRun: (task: string, model: string) => void;
 }) {
   const [taskText, setTaskText] = useState("");
-  const [model, setModel] = useState("nova-pro-v1");
+  const [model, setModel] = useState("meta-llama/llama-4-scout-17b-16e-instruct");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {

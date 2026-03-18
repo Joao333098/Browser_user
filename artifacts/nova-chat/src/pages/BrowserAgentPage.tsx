@@ -36,9 +36,8 @@ interface Task {
 }
 
 const MODELS = [
-  { id: "nova-pro-v1", label: "Nova Pro", desc: "Mais capaz" },
-  { id: "nova-2-lite-v1", label: "Nova 2 Lite", desc: "Mais rápido" },
-  { id: "nova-lite-v1", label: "Nova Lite", desc: "Leve" },
+  { id: "meta-llama/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout", desc: "Rápido com visão" },
+  { id: "meta-llama/llama-4-maverick-17b-128e-instruct", label: "Llama 4 Maverick", desc: "Mais capaz" },
 ];
 
 const EXAMPLE_TASK = `if has video on quiz pass use the script the console to create a skip video Your first goal is to log in to the website at the following link:
@@ -74,7 +73,7 @@ function StepIcon({ type }: { type: EventType }) {
 
 export default function BrowserAgentPage() {
   const [taskInput, setTaskInput] = useState("");
-  const [model, setModel] = useState("nova-pro-v1");
+  const [model, setModel] = useState("meta-llama/llama-4-scout-17b-16e-instruct");
   const [currentTask, setCurrentTask] = useState<Task | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [copied, setCopied] = useState(false);

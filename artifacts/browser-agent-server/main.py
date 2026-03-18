@@ -2,8 +2,6 @@ import asyncio
 import base64
 import json
 import os
-import subprocess
-import sys
 import uuid
 from datetime import datetime
 
@@ -14,19 +12,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 
-MOBILE_VITE_PORT = 23870
-MOBILE_VITE_URL = f"http://localhost:{MOBILE_VITE_PORT}"
-_mobile_proc: subprocess.Popen | None = None
-
 CHROMIUM_PATH = (
     os.environ.get("CHROMIUM_PATH")
     or "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium"
 )
 
-NOVA_BASE_URL = "https://api.nova.amazon.com/v1"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 SYSTEM_PROMPT = """You are a browser automation agent. You control a real web browser using Playwright.
-You also have access to web search (nova_grounding) to look up answers when needed.
+You also have access to web search to look up answers when needed.
 
 At each step you receive:
 1. ELEMENTS: numbered refs (@e1, @e2, ...) for every interactive element on the page
@@ -140,24 +134,6 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-async def start_mobile_vite():
-    global _mobile_proc
-    workspace = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    env = {**os.environ, "PORT": str(MOBILE_VITE_PORT), "BASE_PATH": "/mobile/"}
-    _mobile_proc = subprocess.Popen(
-        ["pnpm", "--filter", "@workspace/nova-mobile", "run", "dev"],
-        cwd=workspace,
-        env=env,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-    )
-
-
-@app.on_event("shutdown")
-async def stop_mobile_vite():
-    if _mobile_proc and _mobile_proc.poll() is None:
-        _mobile_proc.terminate()
 
 
 _http_client = httpx.AsyncClient(timeout=30.0)
@@ -170,7 +146,7 @@ human_input_futures: dict[str, asyncio.Future] = {}
 
 class RunRequest(BaseModel):
     task: str
-    model: str = "nova-pro-v1"
+    model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 
 class HumanInputRequest(BaseModel):
@@ -196,9 +172,9 @@ async def get_task(task_id: str):
 
 @app.post("/run")
 async def run_task(request: RunRequest):
-    nova_api_key = os.environ.get("NOVA_API_KEY")
-    if not nova_api_key:
-        raise HTTPException(status_code=500, detail="NOVA_API_KEY not configured.")
+    groq_api_key = os.environ.get("GROQ_API_KEY")
+    if not groq_api_key:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured.")
 
     task_id = str(uuid.uuid4())[:8]
     queue: asyncio.Queue = asyncio.Queue()
@@ -212,7 +188,7 @@ async def run_task(request: RunRequest):
         "result": None,
         "error": None,
     }
-    asyncio.create_task(_run_agent(task_id, request.task, request.model, nova_api_key, queue))
+    asyncio.create_task(_run_agent(task_id, request.task, request.model, groq_api_key, queue))
     return {"task_id": task_id}
 
 
@@ -252,89 +228,56 @@ async def stream_task(task_id: str):
     )
 
 
-async def _ask_nova(api_key: str, model: str, messages: list, retries: int = 5, use_grounding: bool = False) -> str:
-    import urllib.request
-    import urllib.error
+async def _ask_llm(api_key: str, model: str, messages: list, retries: int = 5, use_grounding: bool = False) -> str:
+    import re
     import sys
 
-    loop = asyncio.get_event_loop()
-
-    def _build_body(grounding: bool) -> bytes:
-        payload = {
-            "model": model,
-            "messages": messages,
-            "max_tokens": 512,
-            "temperature": 0.2,
-        }
-        if grounding:
-            payload["system_tools"] = ["nova_grounding"]
-        return json.dumps(payload).encode()
-
-    def _do_request(body_bytes: bytes):
-        req = urllib.request.Request(
-            f"{NOVA_BASE_URL}/chat/completions",
-            data=body_bytes,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                return json.loads(resp.read()), None
-        except urllib.error.HTTPError as e:
-            body_bytes_err = e.read()
-            return None, (e.code, body_bytes_err.decode(errors="replace"))
-
-    def _extract_content(data: dict) -> str | None:
-        msg = data["choices"][0]["message"]
-        content = msg.get("content")
-        if content:
-            return content
-        # nova_grounding may return tool_use with content null; check other fields
-        for key in ("tool_use", "grounding_result", "search_result", "tool_results"):
-            val = msg.get(key)
-            if val:
-                if isinstance(val, str):
-                    return val
-                if isinstance(val, list) and val:
-                    return str(val[0])
-        print(f"[WARN] No content in response: {json.dumps(data)[:400]}", file=sys.stderr)
-        return None
-
     for attempt in range(retries):
-        # Try with grounding first if requested, fallback to plain
-        for grounding in ([True, False] if use_grounding else [False]):
-            data, err = await loop.run_in_executor(None, _do_request, _build_body(grounding))
+        try:
+            response = await _http_client.post(
+                f"{GROQ_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": 512,
+                    "temperature": 0.2,
+                },
+                timeout=60,
+            )
 
-            if err is None:
-                content = _extract_content(data)
-                if content:
-                    return content
-                # No content even without grounding — retry
-                break
-            else:
-                code, body_text = err
-                if code == 429:
-                    wait = 20
-                    try:
-                        import re
-                        err_json = json.loads(body_text)
-                        m_msg = err_json.get("message", "")
-                        m = re.search(r"(\d+)\s*second", m_msg)
-                        if m:
-                            wait = int(m.group(1)) + 2
-                    except Exception:
-                        pass
-                    wait = min(wait * (attempt + 1), 60)
-                    await asyncio.sleep(wait)
-                    break  # retry outer loop
-                raise Exception(f"HTTP Error {code}: {body_text[:200]}")
-        else:
-            continue  # grounding loop exhausted without success, retry outer
+            if response.status_code == 429:
+                wait = 20
+                try:
+                    err_json = response.json()
+                    m_msg = err_json.get("error", {}).get("message", "")
+                    m = re.search(r"(\d+)\s*second", m_msg)
+                    if m:
+                        wait = int(m.group(1)) + 2
+                except Exception:
+                    pass
+                wait = min(wait * (attempt + 1), 60)
+                await asyncio.sleep(wait)
+                continue
 
-        await asyncio.sleep(2 * (attempt + 1))
+            if response.status_code != 200:
+                raise Exception(f"HTTP Error {response.status_code}: {response.text[:200]}")
+
+            data = response.json()
+            content = data["choices"][0]["message"].get("content")
+            if content:
+                return content
+
+            print(f"[WARN] No content in response: {json.dumps(data)[:400]}", file=sys.stderr)
+            await asyncio.sleep(2 * (attempt + 1))
+
+        except Exception as e:
+            if attempt == retries - 1:
+                raise
+            await asyncio.sleep(2 * (attempt + 1))
 
     raise Exception("Rate limit or empty response: maximum retries exceeded")
 
@@ -666,7 +609,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
 
             # Ask LLM
             try:
-                raw_response = await _ask_nova(api_key, model, messages)
+                raw_response = await _ask_llm(api_key, model, messages)
             except Exception as e:
                 await queue.put({
                     "type": "step",
@@ -787,7 +730,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                         {"role": "user", "content": f"Search the web and answer: {query}"}
                     ]
                     try:
-                        search_result = await _ask_nova(api_key, model, search_messages, use_grounding=True)
+                        search_result = await _ask_llm(api_key, model, search_messages)
                     except Exception as e:
                         search_result = f"(web search failed: {e})"
                     messages.append({
