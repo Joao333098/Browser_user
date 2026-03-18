@@ -41,6 +41,10 @@ router.post("/browser/tasks/:taskId/respond", async (req, res) => {
   await proxyJson(req, res, `/tasks/${req.params.taskId}/respond`, "POST", req.body);
 });
 
+router.post("/browser/tasks/clear-stuck", async (req, res) => {
+  await proxyJson(req, res, "/tasks/clear-stuck", "POST");
+});
+
 router.get("/browser/stream/:taskId", async (req: Request, res: Response) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");

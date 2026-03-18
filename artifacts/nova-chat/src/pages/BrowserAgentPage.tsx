@@ -122,6 +122,8 @@ export default function BrowserAgentPage() {
   const [showExample, setShowExample] = useState(false);
   const [humanInput, setHumanInput] = useState("");
   const [sendingHuman, setSendingHuman] = useState(false);
+  const [sessionLimitError, setSessionLimitError] = useState(false);
+  const [clearingStuck, setClearingStuck] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -260,12 +262,26 @@ export default function BrowserAgentPage() {
     }
   };
 
+  const clearStuckSessions = async () => {
+    setClearingStuck(true);
+    try {
+      await fetch("/api/browser/tasks/clear-stuck", { method: "POST" });
+      setSessionLimitError(false);
+      setCurrentTask(null);
+    } catch {
+      // ignore
+    } finally {
+      setClearingStuck(false);
+    }
+  };
+
   const runTask = async () => {
     if (!taskInput.trim() || isRunning) return;
     eventSourceRef.current?.close();
     setIsRunning(true);
     setCurrentTask(null);
     setHumanInput("");
+    setSessionLimitError(false);
 
     try {
       const res = await fetch("/api/browser/run", {
@@ -276,7 +292,12 @@ export default function BrowserAgentPage() {
 
       if (!res.ok) {
         const err = await res.json();
-        setCurrentTask({ id: "err", status: "failed", events: [{ type: "error", error: err.detail || err.message || "Falha ao iniciar tarefa" }] });
+        if (res.status === 429) {
+          setSessionLimitError(true);
+          setCurrentTask({ id: "err", status: "failed", events: [{ type: "error", error: "Limite de sessões atingido. Clique em 'Limpar sessões' para liberar." }] });
+        } else {
+          setCurrentTask({ id: "err", status: "failed", events: [{ type: "error", error: err.detail || err.message || "Falha ao iniciar tarefa" }] });
+        }
         setIsRunning(false);
         return;
       }
@@ -397,6 +418,18 @@ export default function BrowserAgentPage() {
                   </button>
                 ))}
               </div>
+
+              {/* Clear stuck sessions button — shown on 429 */}
+              {sessionLimitError && (
+                <button
+                  onClick={clearStuckSessions}
+                  disabled={clearingStuck}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-orange-500/20 text-orange-300 hover:bg-orange-500/30 border border-orange-500/20 transition-all disabled:opacity-50 shrink-0"
+                >
+                  {clearingStuck ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
+                  Limpar sessões
+                </button>
+              )}
 
               {/* Run/Stop */}
               <button

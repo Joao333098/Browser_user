@@ -148,7 +148,7 @@ task_asyncio_tasks: dict[str, asyncio.Task] = {}
 # human_input_futures: task_id -> asyncio.Future waiting for human response
 human_input_futures: dict[str, asyncio.Future] = {}
 
-MAX_CONCURRENT_SESSIONS = 2
+MAX_CONCURRENT_SESSIONS = 3
 
 
 class RunRequest(BaseModel):
@@ -202,6 +202,28 @@ async def run_task(request: RunRequest):
     t = asyncio.create_task(_run_agent(task_id, request.task, request.model, groq_api_key, queue))
     task_asyncio_tasks[task_id] = t
     return {"task_id": task_id}
+
+
+@app.post("/tasks/clear-stuck")
+async def clear_stuck_tasks():
+    """Mark all tasks stuck in 'running' state as failed and cancel their asyncio tasks."""
+    cleared = []
+    for task_id, task in tasks.items():
+        if task["status"] == "running":
+            t = task_asyncio_tasks.get(task_id)
+            if t and not t.done():
+                t.cancel()
+            task["status"] = "failed"
+            task["error"] = "Cancelado — sessão travada limpa pelo usuário."
+            cleared.append(task_id)
+            q = task_queues.get(task_id)
+            if q:
+                try:
+                    await q.put({"type": "error", "error": "Sessão limpa.", "timestamp": datetime.now().isoformat()})
+                    await q.put(None)
+                except Exception:
+                    pass
+    return {"cleared": cleared, "count": len(cleared)}
 
 
 @app.post("/tasks/{task_id}/stop")
@@ -1138,6 +1160,10 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             "timestamp": datetime.now().isoformat(),
         })
     finally:
+        # Always clean up status so stuck "running" tasks don't block new ones
+        if task_id in tasks and tasks[task_id]["status"] == "running":
+            tasks[task_id]["status"] = "failed"
+            tasks[task_id]["error"] = "Tarefa encerrada inesperadamente."
         try:
             if browser:
                 await browser.close()
@@ -1149,7 +1175,11 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
         except Exception:
             pass
         human_input_futures.pop(task_id, None)
-        await queue.put(None)
+        # Signal end of stream
+        try:
+            await queue.put(None)
+        except Exception:
+            pass
 
 
 @app.api_route("/mobile/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
