@@ -3,8 +3,21 @@ import { SendMessageBody } from "@workspace/api-zod";
 
 const router: IRouter = Router();
 
-function getOllamaBaseUrl(): string {
-  return (process.env.OLLAMA_URL ?? "http://localhost:11434").replace(/\/$/, "") + "/v1";
+function getLLMConfig(): { baseUrl: string; apiKey: string; defaultModel: string; provider: string } {
+  if (process.env.GROQ_API_KEY) {
+    return {
+      baseUrl: "https://api.groq.com/openai/v1",
+      apiKey: process.env.GROQ_API_KEY,
+      defaultModel: "llama-3.3-70b-versatile",
+      provider: "Groq",
+    };
+  }
+  return {
+    baseUrl: (process.env.OLLAMA_URL ?? "http://localhost:11434").replace(/\/$/, "") + "/v1",
+    apiKey: "ollama",
+    defaultModel: "deepseek-v3.2",
+    provider: "Ollama",
+  };
 }
 
 router.post("/chat", async (req: Request, res: Response) => {
@@ -17,15 +30,15 @@ router.post("/chat", async (req: Request, res: Response) => {
     return;
   }
 
-  const { messages, model = "deepseek-v3.2" } = parseResult.data;
-  const ollamaBaseUrl = getOllamaBaseUrl();
+  const { baseUrl, apiKey, defaultModel } = getLLMConfig();
+  const { messages, model = defaultModel } = parseResult.data;
 
   try {
-    const response = await fetch(`${ollamaBaseUrl}/chat/completions`, {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer ollama",
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model,
@@ -36,7 +49,7 @@ router.post("/chat", async (req: Request, res: Response) => {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`Ollama API error ${response.status}:`, errorText);
+      console.error(`LLM API error ${response.status}:`, errorText);
       let errorData: { error?: { message?: string } } = {};
       try {
         errorData = JSON.parse(errorText);
@@ -44,8 +57,8 @@ router.post("/chat", async (req: Request, res: Response) => {
         errorData = {};
       }
       res.status(response.status).json({
-        error: "ollama_api_error",
-        message: errorData?.error?.message || errorText || `Ollama returned status ${response.status}`,
+        error: "llm_api_error",
+        message: errorData?.error?.message || errorText || `LLM API returned status ${response.status}`,
       });
       return;
     }
@@ -73,7 +86,7 @@ router.post("/chat", async (req: Request, res: Response) => {
       usage: data.usage,
     });
   } catch (err: any) {
-    console.error("Ollama API error:", err);
+    console.error("LLM API error:", err);
 
     const isConnectionRefused =
       err?.cause?.code === "ECONNREFUSED" || err?.message?.includes("fetch failed");
@@ -81,7 +94,7 @@ router.post("/chat", async (req: Request, res: Response) => {
     if (isConnectionRefused) {
       const ollamaUrl = process.env.OLLAMA_URL ?? "http://localhost:11434";
       res.status(503).json({
-        error: "ollama_not_reachable",
+        error: "llm_not_reachable",
         message: `Não foi possível conectar ao Ollama em ${ollamaUrl}. Para usar o app: (1) Instale o Ollama em ollama.com, (2) Exponha-o via ngrok ou similar, (3) Configure a variável OLLAMA_URL com o endereço público. Exemplo: https://abc123.ngrok-free.app`,
       });
       return;
@@ -95,10 +108,11 @@ router.post("/chat", async (req: Request, res: Response) => {
 });
 
 router.get("/chat/config", (_req: Request, res: Response) => {
-  const ollamaUrl = process.env.OLLAMA_URL ?? "http://localhost:11434";
+  const { baseUrl, defaultModel, provider } = getLLMConfig();
   res.json({
-    ollamaUrl,
-    models: ["deepseek-v3.2", "gemini-3-flash-preview", "kimi-k2.5"],
+    provider,
+    baseUrl,
+    models: [defaultModel, "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
   });
 });
 
