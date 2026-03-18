@@ -30,7 +30,7 @@ paths:
       operationId: sendMessage
       tags: [chat]
       summary: Send a chat message
-      description: Sends a message to Nova AI and returns the response
+      description: Sends a message to Ollama and returns the response
       requestBody:
         required: true
         content:
@@ -85,7 +85,7 @@ components:
             $ref: "#/components/schemas/ChatMessage"
         model:
           type: string
-          default: nova-2-lite-v1
+          default: deepseek-v3.2
         stream:
           type: boolean
           default: false

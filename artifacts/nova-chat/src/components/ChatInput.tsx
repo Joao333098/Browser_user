@@ -51,7 +51,7 @@ export function ChatInput({ onSend, isTyping }: ChatInputProps) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Message Nova AI..."
+          placeholder="Message Ollama..."
           className="w-full max-h-[200px] min-h-[44px] bg-transparent text-foreground placeholder:text-muted-foreground resize-none border-0 focus:ring-0 p-3 text-base leading-relaxed scrollbar-thin scrollbar-thumb-white/10"
           rows={1}
           disabled={isTyping}
@@ -95,7 +95,7 @@ export function ChatInput({ onSend, isTyping }: ChatInputProps) {
       
       <div className="text-center mt-3">
         <p className="text-[11px] text-muted-foreground/60 font-medium">
-          Nova AI can make mistakes. Consider verifying important information.
+          AI models can make mistakes. Consider verifying important information.
         </p>
       </div>
     </div>

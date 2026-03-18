@@ -25,7 +25,7 @@ function TopNav({ active, onSelect }: { active: Tab; onSelect: (t: Tab) => void 
       }}
     >
       <span style={{ fontWeight: 700, fontSize: 18, color: "#fff", letterSpacing: "-0.3px" }}>
-        Nova
+        Ollama
       </span>
       <div style={{ display: "flex", gap: 4, background: "rgba(255,255,255,0.06)", borderRadius: 12, padding: 3 }}>
         <button

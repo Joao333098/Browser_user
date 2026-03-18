@@ -8,12 +8,12 @@ export interface Message extends ChatMessage {
   timestamp: Date;
 }
 
-export type NovaModel = "nova-2-lite-v1" | "nova-lite-v1" | "nova-pro-v1" | "nova-micro-v1";
+export type ChatModel = "deepseek-v3.2" | "gemini-3-flash-preview" | "kimi-k2.5";
 
 export function useChatSession() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [model, setModel] = useState<NovaModel>("nova-2-lite-v1");
-  const [systemPrompt, setSystemPrompt] = useState<string>("You are Nova, a highly capable, helpful, and concise AI assistant.");
+  const [model, setModel] = useState<ChatModel>("deepseek-v3.2");
+  const [systemPrompt, setSystemPrompt] = useState<string>("You are a highly capable, helpful, and concise AI assistant running via Ollama.");
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const [isTyping, setIsTyping] = useState(false);
   
@@ -97,7 +97,7 @@ export function useChatSession() {
       toast({
         variant: "destructive",
         title: "Communication Error",
-        description: error.message || "Failed to get a response from Nova AI. Please try again.",
+        description: error.message || "Failed to get a response from Ollama. Please try again.",
       });
       // Optionally remove the user message if it failed, but usually it's better to leave it and let them retry
     } finally {
