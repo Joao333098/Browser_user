@@ -356,6 +356,13 @@ async def _search_duckduckgo(query: str) -> str:
         return f"(Search error: {e})"
 
 
+FALLBACK_MODEL = "llama-3.3-70b-versatile"
+
+
+class DailyLimitExceeded(Exception):
+    """Raised when the model's daily token limit (TPD) is fully exhausted."""
+
+
 async def _ask_llm(api_key: str, model: str, messages: list, retries: int = 5, use_grounding: bool = False) -> str:
     import sys
 
@@ -385,9 +392,14 @@ async def _ask_llm(api_key: str, model: str, messages: list, retries: int = 5, u
                     err_json = response.json()
                     m_msg = err_json.get("error", {}).get("message", "")
                     print(f"[LLM] Rate limit: {m_msg[:200]}", file=sys.stderr, flush=True)
+                    # Daily limit (TPD) is permanent for today — raise immediately, don't retry
+                    if "per day (TPD)" in m_msg or "tokens per day" in m_msg.lower():
+                        raise DailyLimitExceeded(f"Limite diário de tokens atingido para '{model}'.")
                     m = re.search(r"(\d+)\s*second", m_msg)
                     if m:
                         wait = int(m.group(1)) + 2
+                except DailyLimitExceeded:
+                    raise
                 except Exception:
                     pass
                 wait = min(wait * (attempt + 1), 60)
@@ -409,6 +421,8 @@ async def _ask_llm(api_key: str, model: str, messages: list, retries: int = 5, u
             print(f"[WARN] No content in response: {json.dumps(data)[:400]}", file=sys.stderr, flush=True)
             await asyncio.sleep(2 * (attempt + 1))
 
+        except DailyLimitExceeded:
+            raise
         except Exception as e:
             print(f"[LLM] Exception attempt={attempt+1}: {e}", file=sys.stderr, flush=True)
             if attempt == retries - 1:
@@ -926,15 +940,29 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
 
             # Strip images from all messages except the last user message
             # Groq supports max 5 images — keep only the most recent screenshot
+            def _flatten_content(content):
+                """Convert list content to plain string for text-only models."""
+                if isinstance(content, list):
+                    parts = [p.get("text", "") for p in content if p.get("type") == "text"]
+                    return "\n".join(parts)
+                return content
+
             def _strip_images(msgs: list) -> list:
                 result = []
                 for i, msg in enumerate(msgs):
                     is_last_user = (i == len(msgs) - 1 and msg["role"] == "user")
-                    if is_last_user or not isinstance(msg.get("content"), list):
+                    if not isinstance(msg.get("content"), list):
                         result.append(msg)
-                    else:
+                    elif is_vision and is_last_user:
+                        # Vision model: keep list with images for last user message
+                        result.append(msg)
+                    elif is_vision:
+                        # Vision model: strip images from non-last messages, keep list format
                         text_only = [p for p in msg["content"] if p.get("type") == "text"]
                         result.append({**msg, "content": text_only if text_only else msg["content"]})
+                    else:
+                        # Text-only model: flatten all list content to plain strings
+                        result.append({**msg, "content": _flatten_content(msg["content"])})
                 return result
 
             # Notify UI the agent is thinking
@@ -948,9 +976,46 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                 "timestamp": datetime.now().isoformat(),
             })
 
-            # Ask LLM
+            # Ask LLM — auto-fallback to FALLBACK_MODEL if daily limit is exhausted
             try:
                 raw_response = await _ask_llm(api_key, model, _strip_images(messages))
+            except DailyLimitExceeded as e:
+                if model != FALLBACK_MODEL:
+                    old_model = model
+                    model = FALLBACK_MODEL
+                    is_vision = model in VISION_MODELS  # recalc for new model
+                    print(f"[AGENT] Daily limit hit for {old_model}, switching to {model}", file=sys.stderr, flush=True)
+                    await queue.put({
+                        "type": "step",
+                        "step": step,
+                        "thought": f"Limite diário do modelo '{old_model}' atingido. Trocando automaticamente para '{model}'.",
+                        "action": f"Trocando para {model}",
+                        "url": current_url,
+                        "screenshot": None,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    try:
+                        raw_response = await _ask_llm(api_key, model, _strip_images(messages))
+                    except Exception as e2:
+                        error_detail = str(e2)
+                        await queue.put({
+                            "type": "error",
+                            "error": f"Falha também no modelo de fallback '{model}': {error_detail}",
+                            "timestamp": datetime.now().isoformat(),
+                        })
+                        tasks[task_id]["status"] = "failed"
+                        tasks[task_id]["error"] = error_detail
+                        return
+                else:
+                    error_detail = str(e)
+                    await queue.put({
+                        "type": "error",
+                        "error": f"Limite diário atingido para '{model}'. Tente novamente amanhã.",
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    tasks[task_id]["status"] = "failed"
+                    tasks[task_id]["error"] = error_detail
+                    return
             except Exception as e:
                 error_detail = str(e)
                 await queue.put({
