@@ -39,6 +39,7 @@ interface BrowserContextValue {
   runTask: (taskText: string, model: string) => Promise<void>;
   stopTask: () => void;
   respondToHuman: (response: string) => Promise<void>;
+  injectMessage: (message: string) => Promise<void>;
   clearTask: () => void;
 }
 
@@ -74,6 +75,19 @@ export function BrowserProvider({ children }: { children: React.ReactNode }) {
       // ignore
     }
   }, [task]);
+
+  const injectMessage = useCallback(async (message: string) => {
+    if (!task || !isRunning) return;
+    try {
+      await fetch(`/api/browser/tasks/${task.id}/inject`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ response: message }),
+      });
+    } catch {
+      // ignore
+    }
+  }, [task, isRunning]);
 
   const runTask = useCallback(async (taskText: string, model: string) => {
     esRef.current?.close();
@@ -167,7 +181,7 @@ export function BrowserProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <BrowserContext.Provider value={{ task, isRunning, runTask, stopTask, respondToHuman, clearTask }}>
+    <BrowserContext.Provider value={{ task, isRunning, runTask, stopTask, respondToHuman, injectMessage, clearTask }}>
       {children}
     </BrowserContext.Provider>
   );

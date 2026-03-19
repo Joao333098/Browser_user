@@ -185,6 +185,8 @@ task_queues: dict[str, asyncio.Queue] = {}
 task_asyncio_tasks: dict[str, asyncio.Task] = {}
 # human_input_futures: task_id -> asyncio.Future waiting for human response
 human_input_futures: dict[str, asyncio.Future] = {}
+# injected_queues: mid-task user instructions injected while agent is running
+injected_queues: dict[str, asyncio.Queue] = {}
 
 MAX_CONCURRENT_SESSIONS = 3
 
@@ -233,6 +235,7 @@ async def run_task(request: RunRequest):
     task_id = str(uuid.uuid4())[:8]
     queue: asyncio.Queue = asyncio.Queue()
     task_queues[task_id] = queue
+    injected_queues[task_id] = asyncio.Queue()
     tasks[task_id] = {
         "id": task_id,
         "task": request.task,
@@ -296,6 +299,16 @@ async def human_respond(task_id: str, body: HumanInputRequest):
     return {"ok": True}
 
 
+@app.post("/tasks/{task_id}/inject")
+async def inject_message(task_id: str, body: HumanInputRequest):
+    """Inject an additional instruction into a running agent mid-task."""
+    q = injected_queues.get(task_id)
+    if not q:
+        raise HTTPException(status_code=404, detail="Task not found or already finished")
+    await q.put(body.response)
+    return {"ok": True}
+
+
 @app.get("/stream/{task_id}")
 async def stream_task(task_id: str):
     if task_id not in task_queues:
@@ -356,7 +369,7 @@ async def _search_duckduckgo(query: str) -> str:
         return f"(Search error: {e})"
 
 
-FALLBACK_MODEL = "llama-3.3-70b-versatile"
+FALLBACK_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
 
 class DailyLimitExceeded(Exception):
@@ -965,14 +978,33 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                         result.append({**msg, "content": _flatten_content(msg["content"])})
                 return result
 
-            # Notify UI the agent is thinking
+            # Check for any mid-task instructions injected by the user
+            inj_q = injected_queues.get(task_id)
+            if inj_q:
+                while True:
+                    try:
+                        injected_msg = inj_q.get_nowait()
+                        messages.append({"role": "user", "content": f"[Instrução adicional do usuário]: {injected_msg}"})
+                        await queue.put({
+                            "type": "step",
+                            "step": step,
+                            "thought": f"Instrução recebida: {injected_msg}",
+                            "action": "Nova instrução do usuário recebida",
+                            "url": current_url,
+                            "screenshot": screenshot_b64,
+                            "timestamp": datetime.now().isoformat(),
+                        })
+                    except asyncio.QueueEmpty:
+                        break
+
+            # Notify UI the agent is thinking — always send current screenshot so user sees live view
             await queue.put({
                 "type": "step",
                 "step": f"thinking_{step}",
                 "thought": "Analisando a página e decidindo a próxima ação…",
                 "action": "Pensando…",
                 "url": current_url,
-                "screenshot": None,
+                "screenshot": screenshot_b64,
                 "timestamp": datetime.now().isoformat(),
             })
 
@@ -980,37 +1012,44 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             try:
                 raw_response = await _ask_llm(api_key, model, _strip_images(messages))
             except DailyLimitExceeded as e:
-                if model != FALLBACK_MODEL:
-                    old_model = model
-                    model = FALLBACK_MODEL
-                    is_vision = model in VISION_MODELS  # recalc for new model
-                    print(f"[AGENT] Daily limit hit for {old_model}, switching to {model}", file=sys.stderr, flush=True)
-                    await queue.put({
-                        "type": "step",
-                        "step": step,
-                        "thought": f"Limite diário do modelo '{old_model}' atingido. Trocando automaticamente para '{model}'.",
-                        "action": f"Trocando para {model}",
-                        "url": current_url,
-                        "screenshot": None,
-                        "timestamp": datetime.now().isoformat(),
-                    })
-                    try:
-                        raw_response = await _ask_llm(api_key, model, _strip_images(messages))
-                    except Exception as e2:
-                        error_detail = str(e2)
+                # Try each fallback model in order
+                switched = False
+                for fallback in FALLBACK_MODELS:
+                    if fallback != model:
+                        old_model = model
+                        model = fallback
+                        is_vision = model in VISION_MODELS
+                        print(f"[AGENT] Daily limit hit for {old_model}, switching to {model}", file=sys.stderr, flush=True)
                         await queue.put({
-                            "type": "error",
-                            "error": f"Falha também no modelo de fallback '{model}': {error_detail}",
+                            "type": "step",
+                            "step": step,
+                            "thought": f"Limite diário do modelo '{old_model}' atingido. Trocando automaticamente para '{model}'.",
+                            "action": f"Trocando para {model}",
+                            "url": current_url,
+                            "screenshot": screenshot_b64,
                             "timestamp": datetime.now().isoformat(),
                         })
-                        tasks[task_id]["status"] = "failed"
-                        tasks[task_id]["error"] = error_detail
-                        return
-                else:
-                    error_detail = str(e)
+                        try:
+                            raw_response = await _ask_llm(api_key, model, _strip_images(messages))
+                            switched = True
+                            break
+                        except DailyLimitExceeded:
+                            continue
+                        except Exception as e2:
+                            error_detail = str(e2)
+                            await queue.put({
+                                "type": "error",
+                                "error": f"Erro no modelo de fallback '{model}': {error_detail}",
+                                "timestamp": datetime.now().isoformat(),
+                            })
+                            tasks[task_id]["status"] = "failed"
+                            tasks[task_id]["error"] = error_detail
+                            return
+                if not switched:
+                    error_detail = "Limite diário atingido em todos os modelos. Tente novamente amanhã."
                     await queue.put({
                         "type": "error",
-                        "error": f"Limite diário atingido para '{model}'. Tente novamente amanhã.",
+                        "error": error_detail,
                         "timestamp": datetime.now().isoformat(),
                     })
                     tasks[task_id]["status"] = "failed"

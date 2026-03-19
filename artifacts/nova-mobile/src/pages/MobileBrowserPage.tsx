@@ -1,13 +1,14 @@
 import { useState, useRef, useEffect } from "react";
 import {
   Check, X, Zap, ArrowRight, HelpCircle, Globe, Monitor,
-  Brain, Square, Play, ChevronDown, ChevronUp, ZoomIn, Maximize2
+  Brain, Square, Play, ChevronDown, ChevronUp, ZoomIn, Maximize2, Send
 } from "lucide-react";
 import { useBrowser, type AgentEvent } from "@/context/BrowserContext";
 
 const MODELS = [
-  { id: "meta-llama/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout" },
-  { id: "meta-llama/llama-4-maverick-17b-128e-instruct", label: "Llama 4 Maverick" },
+  { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B (padrão)" },
+  { id: "llama-3.1-8b-instant", label: "Llama 3.1 8B (rápido)" },
+  { id: "meta-llama/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout (visão)" },
 ];
 
 const QUICK_EXAMPLES = [
@@ -142,7 +143,7 @@ function ScreenshotFullscreen({ src, onClose }: { src: string; onClose: () => vo
         <X size={18} />
       </button>
       <img
-        src={`data:image/png;base64,${src}`}
+        src={`data:image/jpeg;base64,${src}`}
         alt="Browser"
         style={{
           maxWidth: "100%",
@@ -262,7 +263,7 @@ function HumanInputModal({
                 }}
               >
                 <img
-                  src={`data:image/png;base64,${screenshot}`}
+                  src={`data:image/jpeg;base64,${screenshot}`}
                   alt="CAPTCHA / Browser"
                   style={{ width: "100%", display: "block" }}
                 />
@@ -344,7 +345,7 @@ function TaskSheet({
   onRun: (task: string, model: string) => void;
 }) {
   const [taskText, setTaskText] = useState("");
-  const [model, setModel] = useState("meta-llama/llama-4-scout-17b-16e-instruct");
+  const [model, setModel] = useState("llama-3.3-70b-versatile");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -516,11 +517,14 @@ function TaskSheet({
 }
 
 export default function MobileBrowserPage() {
-  const { task, isRunning, runTask, stopTask, respondToHuman } = useBrowser();
+  const { task, isRunning, runTask, stopTask, respondToHuman, injectMessage } = useBrowser();
   const [showTaskSheet, setShowTaskSheet] = useState(false);
   const [showLog, setShowLog] = useState(true);
   const [showFullscreenShot, setShowFullscreenShot] = useState(false);
+  const [injectText, setInjectText] = useState("");
+  const [injecting, setInjecting] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const injectInputRef = useRef<HTMLInputElement>(null);
 
   const visibleEvents = task?.events.filter(
     (e) => e.type !== "ping" && e.type !== "connected"
@@ -529,6 +533,16 @@ export default function MobileBrowserPage() {
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [visibleEvents.length]);
+
+  const handleInject = async () => {
+    const msg = injectText.trim();
+    if (!msg || injecting) return;
+    setInjecting(true);
+    setInjectText("");
+    await injectMessage(msg);
+    setInjecting(false);
+    injectInputRef.current?.focus();
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#0a0a0a", position: "relative" }}>
@@ -571,7 +585,7 @@ export default function MobileBrowserPage() {
         )}
       </div>
 
-      {/* Browser view */}
+      {/* Live browser view */}
       <div
         onClick={() => task?.latestScreenshot && setShowFullscreenShot(true)}
         style={{
@@ -592,10 +606,26 @@ export default function MobileBrowserPage() {
         {task?.latestScreenshot ? (
           <>
             <img
-              src={`data:image/png;base64,${task.latestScreenshot}`}
-              alt="Browser"
+              src={`data:image/jpeg;base64,${task.latestScreenshot}`}
+              alt="Browser ao vivo"
               style={{ width: "100%", height: "100%", objectFit: "contain" }}
             />
+            {isRunning && (
+              <div style={{
+                position: "absolute",
+                top: 6,
+                left: 6,
+                background: "rgba(0,0,0,0.6)",
+                borderRadius: 6,
+                padding: "3px 7px",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+              }}>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#ef4444", animation: "pulse 1s infinite" }} />
+                <span style={{ fontSize: 10, color: "rgba(255,255,255,0.8)", fontWeight: 600 }}>AO VIVO</span>
+              </div>
+            )}
             <div
               style={{
                 position: "absolute",
@@ -621,7 +651,7 @@ export default function MobileBrowserPage() {
         )}
       </div>
 
-      {/* Thought */}
+      {/* Current thought */}
       {task?.currentThought && isRunning && (
         <div
           style={{
@@ -715,27 +745,73 @@ export default function MobileBrowserPage() {
         }}
       >
         {isRunning ? (
-          <button
-            onClick={stopTask}
-            style={{
-              width: "100%",
-              padding: "14px",
-              borderRadius: 12,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "rgba(255,255,255,0.05)",
-              color: "#f0f0f0",
-              fontSize: 15,
-              fontWeight: 600,
-              cursor: "pointer",
-              fontFamily: "inherit",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 8,
-            }}
-          >
-            <Square size={15} /> Parar tarefa
-          </button>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {/* Inject instruction input */}
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                ref={injectInputRef}
+                type="text"
+                value={injectText}
+                onChange={(e) => setInjectText(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleInject(); }}
+                placeholder="Adicionar instrução enquanto roda..."
+                style={{
+                  flex: 1,
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  borderRadius: 12,
+                  padding: "11px 14px",
+                  color: "#f0f0f0",
+                  fontSize: 14,
+                  fontFamily: "inherit",
+                  outline: "none",
+                }}
+              />
+              <button
+                onClick={handleInject}
+                disabled={!injectText.trim() || injecting}
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: 12,
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  background: injectText.trim() ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.04)",
+                  color: injectText.trim() ? "#ffffff" : "rgba(255,255,255,0.25)",
+                  cursor: injectText.trim() ? "pointer" : "default",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                  fontFamily: "inherit",
+                  transition: "all 0.15s",
+                }}
+              >
+                <Send size={16} />
+              </button>
+            </div>
+            {/* Stop button */}
+            <button
+              onClick={stopTask}
+              style={{
+                width: "100%",
+                padding: "11px",
+                borderRadius: 12,
+                border: "1px solid rgba(255,80,80,0.25)",
+                background: "rgba(255,80,80,0.08)",
+                color: "rgba(255,140,140,0.9)",
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: "inherit",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+              }}
+            >
+              <Square size={13} /> Parar tarefa
+            </button>
+          </div>
         ) : (
           <button
             onClick={() => setShowTaskSheet(true)}
