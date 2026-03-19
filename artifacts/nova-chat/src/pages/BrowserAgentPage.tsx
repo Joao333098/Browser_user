@@ -36,8 +36,9 @@ interface Task {
 }
 
 const MODELS = [
-  { id: "meta-llama/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout", desc: "Rápido com visão" },
-  { id: "meta-llama/llama-4-maverick-17b-128e-instruct", label: "Llama 4 Maverick", desc: "Mais capaz" },
+  { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B", desc: "Melhor qualidade (padrão)" },
+  { id: "llama-3.1-8b-instant", label: "Llama 3.1 8B", desc: "Mais rápido" },
+  { id: "meta-llama/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout", desc: "Com visão (limite diário)" },
 ];
 
 const EXAMPLE_TASK = `if has video on quiz pass use the script the console to create a skip video Your first goal is to log in to the website at the following link:
@@ -107,7 +108,7 @@ function loadState(): { task: Task; taskInput: string; model: string; running: b
         waitingForHuman: d.waitingForHuman, humanQuestion: d.humanQuestion,
       },
       taskInput: d.taskInput ?? "",
-      model: d.model ?? "meta-llama/llama-4-scout-17b-16e-instruct",
+      model: d.model ?? "llama-3.3-70b-versatile",
       running: d.running ?? false,
     };
   } catch { return null; }
@@ -115,7 +116,7 @@ function loadState(): { task: Task; taskInput: string; model: string; running: b
 
 export default function BrowserAgentPage() {
   const [taskInput, setTaskInput] = useState("");
-  const [model, setModel] = useState("meta-llama/llama-4-scout-17b-16e-instruct");
+  const [model, setModel] = useState("llama-3.3-70b-versatile");
   const [currentTask, setCurrentTask] = useState<Task | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [copied, setCopied] = useState(false);

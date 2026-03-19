@@ -191,7 +191,6 @@ MAX_CONCURRENT_SESSIONS = 3
 
 VISION_MODELS: set[str] = {
     "meta-llama/llama-4-scout-17b-16e-instruct",
-    "meta-llama/llama-4-maverick-17b-128e-instruct",
 }
 
 
