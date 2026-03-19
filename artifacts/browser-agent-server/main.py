@@ -189,9 +189,15 @@ human_input_futures: dict[str, asyncio.Future] = {}
 MAX_CONCURRENT_SESSIONS = 3
 
 
+VISION_MODELS: set[str] = {
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+}
+
+
 class RunRequest(BaseModel):
     task: str
-    model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+    model: str = "llama-3.3-70b-versatile"
 
 
 class HumanInputRequest(BaseModel):
@@ -356,6 +362,7 @@ async def _ask_llm(api_key: str, model: str, messages: list, retries: int = 5, u
 
     for attempt in range(retries):
         try:
+            print(f"[LLM] Calling model={model} msgs={len(messages)} attempt={attempt+1}/{retries}", file=sys.stderr, flush=True)
             response = await _http_client.post(
                 f"{GROQ_BASE_URL}/chat/completions",
                 headers={
@@ -371,32 +378,40 @@ async def _ask_llm(api_key: str, model: str, messages: list, retries: int = 5, u
                 timeout=60,
             )
 
+            print(f"[LLM] Response status={response.status_code}", file=sys.stderr, flush=True)
+
             if response.status_code == 429:
                 wait = 20
                 try:
                     err_json = response.json()
                     m_msg = err_json.get("error", {}).get("message", "")
+                    print(f"[LLM] Rate limit: {m_msg[:200]}", file=sys.stderr, flush=True)
                     m = re.search(r"(\d+)\s*second", m_msg)
                     if m:
                         wait = int(m.group(1)) + 2
                 except Exception:
                     pass
                 wait = min(wait * (attempt + 1), 60)
+                print(f"[LLM] Waiting {wait}s before retry...", file=sys.stderr, flush=True)
                 await asyncio.sleep(wait)
                 continue
 
             if response.status_code != 200:
-                raise Exception(f"HTTP Error {response.status_code}: {response.text[:200]}")
+                body = response.text[:300]
+                print(f"[LLM] Error body: {body}", file=sys.stderr, flush=True)
+                raise Exception(f"HTTP Error {response.status_code}: {body}")
 
             data = response.json()
             content = data["choices"][0]["message"].get("content")
             if content:
+                print(f"[LLM] Got response ({len(content)} chars)", file=sys.stderr, flush=True)
                 return content
 
-            print(f"[WARN] No content in response: {json.dumps(data)[:400]}", file=sys.stderr)
+            print(f"[WARN] No content in response: {json.dumps(data)[:400]}", file=sys.stderr, flush=True)
             await asyncio.sleep(2 * (attempt + 1))
 
         except Exception as e:
+            print(f"[LLM] Exception attempt={attempt+1}: {e}", file=sys.stderr, flush=True)
             if attempt == retries - 1:
                 raise
             await asyncio.sleep(2 * (attempt + 1))
@@ -775,10 +790,13 @@ async def _detect_captcha(page) -> dict | None:
 
 
 async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: asyncio.Queue):
+    import sys
     from playwright.async_api import async_playwright
 
     playwright_ctx = None
     browser = None
+
+    print(f"[AGENT] Starting task {task_id} model={model}", file=sys.stderr, flush=True)
 
     try:
         playwright_ctx = await async_playwright().start()
@@ -886,9 +904,9 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                 })
                 continue
 
-            # Build LLM message — include screenshot when forced (after navigation or first step)
-            # or every 3 steps to avoid hitting Groq token-per-minute limits on long tasks
-            send_screenshot = bool(screenshot_b64 and (force_screenshot or step - last_screenshot_step >= 3))
+            # Build LLM message — screenshots only for vision-capable models
+            is_vision = model in VISION_MODELS
+            send_screenshot = bool(is_vision and screenshot_b64 and (force_screenshot or step - last_screenshot_step >= 3))
             if send_screenshot:
                 last_screenshot_step = step
                 force_screenshot = False
@@ -899,7 +917,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
             if send_screenshot:
                 user_content.append({
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"},
+                    "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64}"},
                 })
 
             messages.append({"role": "user", "content": user_content})
