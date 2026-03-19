@@ -45,6 +45,10 @@ router.post("/browser/tasks/:taskId/inject", async (req, res) => {
   await proxyJson(req, res, `/tasks/${req.params.taskId}/inject`, "POST", req.body);
 });
 
+router.get("/browser/screenshot/:taskId", async (req, res) => {
+  await proxyJson(req, res, `/screenshot/${req.params.taskId}`);
+});
+
 router.post("/browser/tasks/clear-stuck", async (req, res) => {
   await proxyJson(req, res, "/tasks/clear-stuck", "POST");
 });

@@ -9,7 +9,7 @@ const port = rawPort && !Number.isNaN(Number(rawPort)) && Number(rawPort) > 0
   ? Number(rawPort)
   : 5000;
 
-const basePath = process.env.BASE_PATH ?? "/mobile/";
+const basePath = process.env.BASE_PATH ?? "/";
 
 export default defineConfig({
   base: basePath,

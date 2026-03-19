@@ -70,15 +70,10 @@ function spawnVite() {
   });
 }
 
-function startListening(retries = 15, delay = 1000) {
+function startListening() {
   server.once("error", (err) => {
-    if (err.code === "EADDRINUSE" && retries > 0) {
-      console.log(`Port ${PROXY_PORT} in use, retrying in ${delay}ms... (${retries} retries left)`);
-      setTimeout(() => startListening(retries - 1, delay), delay);
-    } else {
-      console.error("Server error:", err.message);
-      process.exit(1);
-    }
+    console.error("Server error:", err.message);
+    process.exit(1);
   });
 
   server.listen(PROXY_PORT, "0.0.0.0", () => {

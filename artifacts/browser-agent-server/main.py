@@ -187,6 +187,8 @@ task_asyncio_tasks: dict[str, asyncio.Task] = {}
 human_input_futures: dict[str, asyncio.Future] = {}
 # injected_queues: mid-task user instructions injected while agent is running
 injected_queues: dict[str, asyncio.Queue] = {}
+# task_pages: live playwright page object per running task (for real-time screenshots)
+task_pages: dict = {}
 
 MAX_CONCURRENT_SESSIONS = 3
 
@@ -307,6 +309,28 @@ async def inject_message(task_id: str, body: HumanInputRequest):
         raise HTTPException(status_code=404, detail="Task not found or already finished")
     await q.put(body.response)
     return {"ok": True}
+
+
+@app.get("/screenshot/{task_id}")
+async def get_live_screenshot(task_id: str):
+    """Take a real-time screenshot of the active browser page for this task."""
+    page = task_pages.get(task_id)
+    if not page:
+        raise HTTPException(status_code=404, detail="No active browser for this task")
+    try:
+        shot_bytes = await page.screenshot(
+            type="jpeg", quality=55, scale="css",
+            clip={"x": 0, "y": 0, "width": 1280, "height": 720}
+        )
+        shot_b64 = base64.b64encode(shot_bytes).decode()
+        return {"screenshot": shot_b64}
+    except Exception:
+        try:
+            shot_bytes = await page.screenshot(type="jpeg", quality=55)
+            shot_b64 = base64.b64encode(shot_bytes).decode()
+            return {"screenshot": shot_b64}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/stream/{task_id}")
@@ -839,6 +863,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
         )
         context = await browser.new_context(viewport={"width": 1280, "height": 720})
         page = await context.new_page()
+        task_pages[task_id] = page
 
         await queue.put({
             "type": "started",
@@ -1382,6 +1407,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
         except Exception:
             pass
         human_input_futures.pop(task_id, None)
+        task_pages.pop(task_id, None)
         # Signal end of stream
         try:
             await queue.put(None)

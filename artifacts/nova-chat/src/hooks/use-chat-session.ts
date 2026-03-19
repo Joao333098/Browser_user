@@ -1,44 +1,72 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useSendMessage } from "@workspace/api-client-react";
 import type { ChatMessage, TokenUsage } from "@workspace/api-client-react/src/generated/api.schemas";
-import { useToast } from "@/hooks/use-toast";
 
-export interface Message extends ChatMessage {
+export interface Message {
   id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
   timestamp: Date;
+  commands?: ParsedCommand[];
+}
+
+export interface ParsedCommand {
+  type: "stop" | "new_task" | "respond";
+  param?: string;
 }
 
 export type NovaModel = "llama-3.3-70b-versatile" | "llama-3.1-8b-instant" | "mixtral-8x7b-32768";
 
-export function useChatSession() {
+function parseCommands(text: string): { cleanText: string; commands: ParsedCommand[] } {
+  const commands: ParsedCommand[] = [];
+  let cleanText = text;
+
+  const stopMatch = text.match(/\[CMD:stop\]/gi);
+  if (stopMatch) {
+    commands.push({ type: "stop" });
+    cleanText = cleanText.replace(/\[CMD:stop\]/gi, "").trim();
+  }
+
+  const taskMatches = [...text.matchAll(/\[CMD:new_task:([^\]]+)\]/gi)];
+  for (const m of taskMatches) {
+    commands.push({ type: "new_task", param: m[1].trim() });
+    cleanText = cleanText.replace(m[0], "").trim();
+  }
+
+  const respondMatches = [...text.matchAll(/\[CMD:respond:([^\]]+)\]/gi)];
+  for (const m of respondMatches) {
+    commands.push({ type: "respond", param: m[1].trim() });
+    cleanText = cleanText.replace(m[0], "").trim();
+  }
+
+  return { cleanText, commands };
+}
+
+interface UseChatSessionOptions {
+  browserContextForPrompt?: () => string;
+  onCommand?: (cmd: ParsedCommand) => void;
+}
+
+export function useChatSession({ browserContextForPrompt, onCommand }: UseChatSessionOptions = {}) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [model, setModel] = useState<NovaModel>("llama-3.3-70b-versatile");
-  const [systemPrompt, setSystemPrompt] = useState<string>("You are a highly capable, helpful, and concise AI assistant.");
+  const [systemPrompt, setSystemPrompt] = useState<string>(
+    "Você é Nova, uma assistente de IA altamente capaz, útil e concisa. Responda sempre no mesmo idioma do usuário."
+  );
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const [isTyping, setIsTyping] = useState(false);
-  
-  const { toast } = useToast();
+
   const sendMessageMutation = useSendMessage();
-  
-  // Auto-scroll anchor ref
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, []);
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, scrollToBottom, isTyping]);
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, isTyping]);
 
   const clearChat = useCallback(() => {
     setMessages([]);
     setTokenUsage(null);
-    toast({
-      title: "Chat cleared",
-      description: "Started a new conversation session.",
-    });
-  }, [toast]);
+  }, []);
 
   const sendMessage = useCallback(async (content: string) => {
     if (!content.trim()) return;
@@ -54,56 +82,54 @@ export function useChatSession() {
     setIsTyping(true);
 
     try {
-      // Build API request history
       const apiMessages: ChatMessage[] = [];
-      
-      // Prepend system prompt if it exists
-      if (systemPrompt.trim()) {
-        apiMessages.push({ role: "system", content: systemPrompt.trim() });
+
+      const browserCtx = browserContextForPrompt?.();
+      const fullSystemPrompt = browserCtx
+        ? `${systemPrompt}\n\n${browserCtx}`
+        : systemPrompt;
+
+      if (fullSystemPrompt.trim()) {
+        apiMessages.push({ role: "system", content: fullSystemPrompt.trim() });
       }
-      
-      // Add conversation history
-      // We map over current state + the new message we just created locally
-      const historyToSync = [...messages, newUserMessage].map(({ role, content }) => ({
-        role,
-        content,
-      }));
-      
-      apiMessages.push(...historyToSync);
+
+      const history = [...messages, newUserMessage].map(({ role, content }) => ({ role, content }));
+      apiMessages.push(...history);
 
       const response = await sendMessageMutation.mutateAsync({
-        data: {
-          messages: apiMessages,
-          model: model,
-          stream: false, // Set to false based on schema, though UI can feel streamed
-        },
+        data: { messages: apiMessages, model, stream: false },
       });
+
+      const rawContent = response.content;
+      const { cleanText, commands } = parseCommands(rawContent);
 
       const newAiMessage: Message = {
         id: response.id || crypto.randomUUID(),
-        role: "assistant" as const, // Forcing type from string
-        content: response.content,
+        role: "assistant",
+        content: cleanText || rawContent,
         timestamp: new Date(),
+        commands: commands.length > 0 ? commands : undefined,
       };
 
       setMessages((prev) => [...prev, newAiMessage]);
-      
-      if (response.usage) {
-        setTokenUsage(response.usage);
+
+      for (const cmd of commands) {
+        onCommand?.(cmd);
       }
 
+      if (response.usage) setTokenUsage(response.usage);
     } catch (error: any) {
-      console.error("Failed to send message:", error);
-      toast({
-        variant: "destructive",
-        title: "Communication Error",
-        description: error.message || "Failed to get a response from Nova AI. Please try again.",
-      });
-      // Optionally remove the user message if it failed, but usually it's better to leave it and let them retry
+      const errMsg: Message = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: `Erro: ${error.message || "Falha ao obter resposta. Tente novamente."}`,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errMsg]);
     } finally {
       setIsTyping(false);
     }
-  }, [messages, model, systemPrompt, sendMessageMutation, toast]);
+  }, [messages, model, systemPrompt, sendMessageMutation, browserContextForPrompt, onCommand]);
 
   return {
     messages,

@@ -1,62 +1,114 @@
-import { Switch, Route, Router as WouterRouter, Link, useLocation } from "wouter";
+import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Toaster } from "@/components/ui/toaster";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import NotFound from "@/pages/not-found";
-import ChatPage from "@/pages/ChatPage";
-import BrowserAgentPage from "@/pages/BrowserAgentPage";
-import { MessageSquare, Globe } from "lucide-react";
+import { MessageSquare, Globe, Loader2 } from "lucide-react";
+import { BrowserProvider, useBrowser } from "@/context/BrowserContext";
+import MobileChatPage from "@/pages/MobileChatPage";
+import MobileBrowserPage from "@/pages/MobileBrowserPage";
 
 const queryClient = new QueryClient();
 
-function Nav() {
-  const [location] = useLocation();
+type Tab = "chat" | "browser";
+
+function TopNav({ active, onSelect }: { active: Tab; onSelect: (t: Tab) => void }) {
+  const { isRunning } = useBrowser();
+
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 bg-black/60 backdrop-blur border border-white/10 rounded-2xl px-2 py-1.5 shadow-xl">
-      <Link
-        href="/"
-        className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${
-          location === "/" ? "bg-white/15 text-white" : "text-white/40 hover:text-white/70"
-        }`}
-      >
-        <MessageSquare className="w-3.5 h-3.5" />
-        Chat
-      </Link>
-      <Link
-        href="/browser-agent"
-        className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${
-          location === "/browser-agent" ? "bg-white/15 text-white" : "text-white/40 hover:text-white/70"
-        }`}
-      >
-        <Globe className="w-3.5 h-3.5" />
-        Browser Agent
-      </Link>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "12px 20px",
+        borderBottom: "1px solid rgba(255,255,255,0.08)",
+        background: "#0a0a0a",
+        flexShrink: 0,
+      }}
+    >
+      <span style={{ fontWeight: 700, fontSize: 18, color: "#fff", letterSpacing: "-0.3px" }}>
+        Nova
+      </span>
+      <div style={{ display: "flex", gap: 4, background: "rgba(255,255,255,0.06)", borderRadius: 12, padding: 3 }}>
+        <button
+          onClick={() => onSelect("chat")}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 40,
+            height: 36,
+            borderRadius: 9,
+            border: "none",
+            cursor: "pointer",
+            background: active === "chat" ? "rgba(255,255,255,0.12)" : "transparent",
+            color: active === "chat" ? "#ffffff" : "rgba(255,255,255,0.35)",
+            transition: "all 0.15s ease",
+          }}
+        >
+          <MessageSquare size={18} />
+        </button>
+        <button
+          onClick={() => onSelect("browser")}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 40,
+            height: 36,
+            borderRadius: 9,
+            border: "none",
+            cursor: "pointer",
+            position: "relative",
+            background: active === "browser" ? "rgba(255,255,255,0.12)" : "transparent",
+            color: active === "browser" ? "#ffffff" : "rgba(255,255,255,0.35)",
+            transition: "all 0.15s ease",
+          }}
+        >
+          <Globe size={18} />
+          {isRunning && (
+            <span
+              style={{
+                position: "absolute",
+                top: 5,
+                right: 5,
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                background: "#fff",
+                border: "1.5px solid #0a0a0a",
+                animation: "pulse 1.5s infinite",
+              }}
+            />
+          )}
+        </button>
+      </div>
     </div>
   );
 }
 
-function Router() {
+function AppShell() {
+  const [activeTab, setActiveTab] = useState<Tab>("chat");
+
   return (
-    <Switch>
-      <Route path="/" component={ChatPage} />
-      <Route path="/browser-agent" component={BrowserAgentPage} />
-      <Route component={NotFound} />
-    </Switch>
+    <div style={{ height: "100dvh", display: "flex", flexDirection: "column", background: "#0a0a0a", overflow: "hidden" }}>
+      <TopNav active={activeTab} onSelect={setActiveTab} />
+      <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+        <div style={{ display: activeTab === "chat" ? "flex" : "none", flexDirection: "column", height: "100%" }}>
+          <MobileChatPage onSwitchToBrowser={() => setActiveTab("browser")} />
+        </div>
+        <div style={{ display: activeTab === "browser" ? "flex" : "none", flexDirection: "column", height: "100%" }}>
+          <MobileBrowserPage />
+        </div>
+      </div>
+    </div>
   );
 }
 
-function App() {
+export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-          <Nav />
-          <Router />
-        </WouterRouter>
-        <Toaster />
-      </TooltipProvider>
+      <BrowserProvider>
+        <AppShell />
+      </BrowserProvider>
     </QueryClientProvider>
   );
 }
-
-export default App;
