@@ -811,6 +811,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
         ref_store: dict = {}
         consecutive_waits = 0
         last_screenshot_step = 0  # Track when we last sent a screenshot to the LLM
+        force_screenshot = True   # Always send screenshot on first step and after navigations
 
         while True:
             step += 1
@@ -885,11 +886,12 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                 })
                 continue
 
-            # Build LLM message — include screenshot every 3 steps or on first step
-            # to avoid hitting Groq's token-per-minute limits on long tasks
-            send_screenshot = screenshot_b64 and (step - last_screenshot_step >= 3 or step == 1)
+            # Build LLM message — include screenshot when forced (after navigation or first step)
+            # or every 3 steps to avoid hitting Groq token-per-minute limits on long tasks
+            send_screenshot = bool(screenshot_b64 and (force_screenshot or step - last_screenshot_step >= 3))
             if send_screenshot:
                 last_screenshot_step = step
+                force_screenshot = False
 
             user_content: list = [
                 {"type": "text", "text": f"Step {step}\nURL: {current_url}\n\n{clickable}\n\nSNAPSHOT:\n{snapshot}"}
@@ -917,6 +919,17 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                         text_only = [p for p in msg["content"] if p.get("type") == "text"]
                         result.append({**msg, "content": text_only if text_only else msg["content"]})
                 return result
+
+            # Notify UI the agent is thinking
+            await queue.put({
+                "type": "step",
+                "step": f"thinking_{step}",
+                "thought": "Analisando a página e decidindo a próxima ação…",
+                "action": "Pensando…",
+                "url": current_url,
+                "screenshot": None,
+                "timestamp": datetime.now().isoformat(),
+            })
 
             # Ask LLM
             try:
@@ -1031,7 +1044,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                         "timestamp": datetime.now().isoformat(),
                     })
                     screenshot_b64 = await _wait_for_page_stable(page, queue, task_id)
-                    last_screenshot_step = 0  # Force screenshot on next LLM call after navigation
+                    force_screenshot = True  # Always show the new page to the LLM
 
                 elif action == "click":
                     # Robust click by visible text
@@ -1042,7 +1055,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     await asyncio.sleep(1.0)
                     if page.url != url_before:
                         screenshot_b64 = await _wait_for_page_stable(page, queue, task_id)
-                        last_screenshot_step = 0
+                        force_screenshot = True
 
                 elif action == "click_ref":
                     ref = args[0] if args else ""
@@ -1086,7 +1099,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     await asyncio.sleep(1.0)
                     if page.url != url_before:
                         screenshot_b64 = await _wait_for_page_stable(page, queue, task_id)
-                        last_screenshot_step = 0
+                        force_screenshot = True
                     else:
                         await asyncio.sleep(0.5)
 
@@ -1098,7 +1111,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                     await asyncio.sleep(1.0)
                     if page.url != url_before:
                         screenshot_b64 = await _wait_for_page_stable(page, queue, task_id)
-                        last_screenshot_step = 0
+                        force_screenshot = True
                     else:
                         await asyncio.sleep(0.5)
 
