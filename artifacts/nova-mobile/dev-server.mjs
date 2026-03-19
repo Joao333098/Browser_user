@@ -1,21 +1,22 @@
 /**
  * Dev proxy server for nova-mobile.
  *
- * Opens an HTTP proxy on PROXY_PORT (env PORT, default 23870) immediately so
+ * Opens an HTTP proxy on PROXY_PORT (env PORT, default 5000) immediately so
  * Replit's health-check always sees a 200. Vite runs on an internal port
  * (PROXY_PORT+1) and real traffic is forwarded there once Vite is ready.
+ * Supports WebSocket upgrades for Vite HMR.
  */
 import http from "http";
+import net from "net";
 import { spawn } from "child_process";
 
-const PROXY_PORT = Number(process.env.PORT ?? 23870);
+const PROXY_PORT = Number(process.env.PORT ?? 5000);
 const VITE_PORT  = PROXY_PORT + 1;
-const BASE_PATH  = process.env.BASE_PATH ?? "/mobile/";
+const BASE_PATH  = process.env.BASE_PATH ?? "/";
 
 let viteReady = false;
 let viteProcess = null;
 
-// ── 1. Open proxy immediately so health-check sees port open ──────────────
 const server = http.createServer((req, res) => {
   if (!viteReady) {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -39,6 +40,21 @@ const server = http.createServer((req, res) => {
 
   proxy.on("error", (err) => { res.writeHead(502); res.end(err.message); });
   req.pipe(proxy, { end: true });
+});
+
+server.on("upgrade", (req, socket, head) => {
+  const conn = net.connect(VITE_PORT, "127.0.0.1", () => {
+    conn.write(
+      `${req.method} ${req.url} HTTP/1.1\r\n` +
+      Object.entries(req.headers).map(([k, v]) => `${k}: ${v}`).join("\r\n") +
+      `\r\nhost: localhost:${VITE_PORT}\r\n\r\n`
+    );
+    conn.write(head);
+    socket.pipe(conn);
+    conn.pipe(socket);
+  });
+  conn.on("error", () => socket.destroy());
+  socket.on("error", () => conn.destroy());
 });
 
 function spawnVite() {

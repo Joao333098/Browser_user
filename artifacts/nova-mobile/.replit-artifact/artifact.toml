@@ -1,6 +1,6 @@
 kind = "web"
-previewPath = "/mobile/"
-title = "Nova Mobile"
+previewPath = "/"
+title = "Nova AI"
 version = "1.0.0"
 id = "artifacts/nova-mobile"
 router = "path"
@@ -10,16 +10,16 @@ name = "react-vite"
 version = "1.0.0"
 
 [[services]]
-localPort = 23843
+localPort = 5000
 name = "web"
-paths = ["/mobile/"]
+paths = ["/"]
 
 [services.development]
 run = "pnpm --filter @workspace/nova-mobile run dev"
 
 [services.env]
-PORT = "23843"
-BASE_PATH = "/mobile/"
+PORT = "5000"
+BASE_PATH = "/"
 
 [services.production]
 build = ["pnpm", "--filter", "@workspace/nova-mobile", "run", "build"]

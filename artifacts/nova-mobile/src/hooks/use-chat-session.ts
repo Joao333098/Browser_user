@@ -1,6 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
-import { useSendMessage } from "@workspace/api-client-react";
-import type { ChatMessage, TokenUsage } from "@workspace/api-client-react/src/generated/api.schemas";
+import { useState, useCallback } from "react";
 
 export interface Message {
   id: string;
@@ -53,19 +51,12 @@ export function useChatSession({ browserContextForPrompt, onCommand }: UseChatSe
   const [systemPrompt, setSystemPrompt] = useState<string>(
     "Você é Nova, uma assistente de IA altamente capaz, útil e concisa. Responda sempre no mesmo idioma do usuário."
   );
-  const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const [isTyping, setIsTyping] = useState(false);
-
-  const sendMessageMutation = useSendMessage();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isTyping]);
+  const [streamingContent, setStreamingContent] = useState<string>("");
 
   const clearChat = useCallback(() => {
     setMessages([]);
-    setTokenUsage(null);
+    setStreamingContent("");
   }, []);
 
   const sendMessage = useCallback(async (content: string) => {
@@ -80,44 +71,85 @@ export function useChatSession({ browserContextForPrompt, onCommand }: UseChatSe
 
     setMessages((prev) => [...prev, newUserMessage]);
     setIsTyping(true);
+    setStreamingContent("");
 
     try {
-      const apiMessages: ChatMessage[] = [];
-
       const browserCtx = browserContextForPrompt?.();
       const fullSystemPrompt = browserCtx
         ? `${systemPrompt}\n\n${browserCtx}`
         : systemPrompt;
 
+      const apiMessages: Array<{ role: string; content: string }> = [];
       if (fullSystemPrompt.trim()) {
         apiMessages.push({ role: "system", content: fullSystemPrompt.trim() });
       }
 
-      const history = [...messages, newUserMessage].map(({ role, content }) => ({ role, content }));
-      apiMessages.push(...history);
+      const allMessages = [...messages, newUserMessage];
+      apiMessages.push(...allMessages.map(({ role, content: c }) => ({ role, content: c })));
 
-      const response = await sendMessageMutation.mutateAsync({
-        data: { messages: apiMessages, model, stream: false },
+      const basePath = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+      const response = await fetch(`${basePath}/api/chat/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: apiMessages, model }),
       });
 
-      const rawContent = response.content;
-      const { cleanText, commands } = parseCommands(rawContent);
+      if (!response.ok || !response.body) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulated = "";
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed === "data: [DONE]") continue;
+          if (!trimmed.startsWith("data: ")) continue;
+
+          const jsonStr = trimmed.slice(6);
+          try {
+            const chunk = JSON.parse(jsonStr);
+            if (chunk.error) throw new Error(chunk.error);
+            const delta = chunk.choices?.[0]?.delta?.content;
+            if (delta) {
+              accumulated += delta;
+              setStreamingContent(accumulated);
+            }
+          } catch (parseErr: any) {
+            if (parseErr.message && !parseErr.message.includes("JSON")) {
+              throw parseErr;
+            }
+          }
+        }
+      }
+
+      const finalContent = accumulated;
+      const { cleanText, commands } = parseCommands(finalContent);
 
       const newAiMessage: Message = {
-        id: response.id || crypto.randomUUID(),
+        id: crypto.randomUUID(),
         role: "assistant",
-        content: cleanText || rawContent,
+        content: cleanText || finalContent,
         timestamp: new Date(),
         commands: commands.length > 0 ? commands : undefined,
       };
 
       setMessages((prev) => [...prev, newAiMessage]);
+      setStreamingContent("");
 
       for (const cmd of commands) {
         onCommand?.(cmd);
       }
-
-      if (response.usage) setTokenUsage(response.usage);
     } catch (error: any) {
       const errMsg: Message = {
         id: crypto.randomUUID(),
@@ -126,10 +158,11 @@ export function useChatSession({ browserContextForPrompt, onCommand }: UseChatSe
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, errMsg]);
+      setStreamingContent("");
     } finally {
       setIsTyping(false);
     }
-  }, [messages, model, systemPrompt, sendMessageMutation, browserContextForPrompt, onCommand]);
+  }, [messages, model, systemPrompt, browserContextForPrompt, onCommand]);
 
   return {
     messages,
@@ -137,10 +170,9 @@ export function useChatSession({ browserContextForPrompt, onCommand }: UseChatSe
     setModel,
     systemPrompt,
     setSystemPrompt,
-    tokenUsage,
     isTyping,
+    streamingContent,
     sendMessage,
     clearChat,
-    messagesEndRef,
   };
 }

@@ -20,6 +20,78 @@ function getLLMConfig(): { baseUrl: string; apiKey: string; defaultModel: string
   };
 }
 
+router.post("/chat/stream", async (req: Request, res: Response) => {
+  const parseResult = SendMessageBody.safeParse(req.body);
+  if (!parseResult.success) {
+    res.status(400).json({ error: "invalid_request", message: parseResult.error.message });
+    return;
+  }
+
+  const { baseUrl, apiKey, defaultModel } = getLLMConfig();
+  const { messages, model } = parseResult.data;
+  const chosenModel = model || defaultModel;
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("Connection", "keep-alive");
+
+  try {
+    const upstream = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: chosenModel,
+        messages,
+        stream: true,
+      }),
+    });
+
+    if (!upstream.ok) {
+      const errorText = await upstream.text();
+      let errorData: { error?: { message?: string } } = {};
+      try { errorData = JSON.parse(errorText); } catch { /* noop */ }
+      res.write(`data: ${JSON.stringify({ error: errorData?.error?.message || errorText })}\n\n`);
+      res.end();
+      return;
+    }
+
+    const reader = upstream.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed === "data: [DONE]") {
+          if (trimmed === "data: [DONE]") {
+            res.write("data: [DONE]\n\n");
+          }
+          continue;
+        }
+        if (trimmed.startsWith("data: ")) {
+          res.write(trimmed + "\n\n");
+        }
+      }
+    }
+
+    res.end();
+  } catch (err: any) {
+    console.error("Stream error:", err);
+    res.write(`data: ${JSON.stringify({ error: err.message || "Server error" })}\n\n`);
+    res.end();
+  }
+});
+
 router.post("/chat", async (req: Request, res: Response) => {
   const parseResult = SendMessageBody.safeParse(req.body);
   if (!parseResult.success) {
@@ -31,8 +103,8 @@ router.post("/chat", async (req: Request, res: Response) => {
   }
 
   const { baseUrl, apiKey, defaultModel } = getLLMConfig();
-  const { messages } = parseResult.data;
-  const model = defaultModel;
+  const { messages, model } = parseResult.data;
+  const chosenModel = model || defaultModel;
 
   try {
     const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -42,7 +114,7 @@ router.post("/chat", async (req: Request, res: Response) => {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model,
+        model: chosenModel,
         messages,
         stream: false,
       }),

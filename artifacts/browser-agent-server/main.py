@@ -200,7 +200,7 @@ VISION_MODELS: set[str] = {
 
 class RunRequest(BaseModel):
     task: str
-    model: str = "llama-3.3-70b-versatile"
+    model: str = "llama-3.1-8b-instant"
 
 
 class HumanInputRequest(BaseModel):
@@ -393,20 +393,24 @@ async def _search_duckduckgo(query: str) -> str:
         return f"(Search error: {e})"
 
 
-FALLBACK_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+FALLBACK_MODELS = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
 
 
 class DailyLimitExceeded(Exception):
     """Raised when the model's daily token limit (TPD) is fully exhausted."""
 
 
-async def _ask_llm(api_key: str, model: str, messages: list, retries: int = 5, use_grounding: bool = False) -> str:
+async def _ask_llm(api_key: str, model: str, messages: list, retries: int = 3, use_grounding: bool = False, queue: asyncio.Queue | None = None, task_id: str | None = None, current_url: str = "") -> str:
     import sys
 
     for attempt in range(retries):
         try:
             print(f"[LLM] Calling model={model} msgs={len(messages)} attempt={attempt+1}/{retries}", file=sys.stderr, flush=True)
-            response = await _http_client.post(
+
+            accumulated = ""
+
+            async with _http_client.stream(
+                "POST",
                 f"{GROQ_BASE_URL}/chat/completions",
                 headers={
                     "Authorization": f"Bearer {api_key}",
@@ -415,48 +419,75 @@ async def _ask_llm(api_key: str, model: str, messages: list, retries: int = 5, u
                 json={
                     "model": model,
                     "messages": messages,
-                    "max_tokens": 1024,
+                    "max_tokens": 512,
                     "temperature": 0.2,
+                    "stream": True,
                 },
-                timeout=60,
-            )
+                timeout=30,
+            ) as response:
+                print(f"[LLM] Response status={response.status_code}", file=sys.stderr, flush=True)
 
-            print(f"[LLM] Response status={response.status_code}", file=sys.stderr, flush=True)
+                if response.status_code == 429:
+                    wait = 15
+                    try:
+                        body = await response.aread()
+                        err_json = json.loads(body)
+                        m_msg = err_json.get("error", {}).get("message", "")
+                        print(f"[LLM] Rate limit: {m_msg[:200]}", file=sys.stderr, flush=True)
+                        if "per day (TPD)" in m_msg or "tokens per day" in m_msg.lower():
+                            raise DailyLimitExceeded(f"Limite diário de tokens atingido para '{model}'.")
+                        m = re.search(r"(\d+)\s*second", m_msg)
+                        if m:
+                            wait = int(m.group(1)) + 2
+                    except DailyLimitExceeded:
+                        raise
+                    except Exception:
+                        pass
+                    wait = min(wait * (attempt + 1), 45)
+                    print(f"[LLM] Waiting {wait}s before retry...", file=sys.stderr, flush=True)
+                    await asyncio.sleep(wait)
+                    continue
 
-            if response.status_code == 429:
-                wait = 20
-                try:
-                    err_json = response.json()
-                    m_msg = err_json.get("error", {}).get("message", "")
-                    print(f"[LLM] Rate limit: {m_msg[:200]}", file=sys.stderr, flush=True)
-                    # Daily limit (TPD) is permanent for today — raise immediately, don't retry
-                    if "per day (TPD)" in m_msg or "tokens per day" in m_msg.lower():
-                        raise DailyLimitExceeded(f"Limite diário de tokens atingido para '{model}'.")
-                    m = re.search(r"(\d+)\s*second", m_msg)
-                    if m:
-                        wait = int(m.group(1)) + 2
-                except DailyLimitExceeded:
-                    raise
-                except Exception:
-                    pass
-                wait = min(wait * (attempt + 1), 60)
-                print(f"[LLM] Waiting {wait}s before retry...", file=sys.stderr, flush=True)
-                await asyncio.sleep(wait)
-                continue
+                if response.status_code != 200:
+                    body = await response.aread()
+                    body_text = body.decode()[:300]
+                    print(f"[LLM] Error body: {body_text}", file=sys.stderr, flush=True)
+                    raise Exception(f"HTTP Error {response.status_code}: {body_text}")
 
-            if response.status_code != 200:
-                body = response.text[:300]
-                print(f"[LLM] Error body: {body}", file=sys.stderr, flush=True)
-                raise Exception(f"HTTP Error {response.status_code}: {body}")
+                thinking_buffer = ""
+                last_think_emit = 0.0
 
-            data = response.json()
-            content = data["choices"][0]["message"].get("content")
-            if content:
-                print(f"[LLM] Got response ({len(content)} chars)", file=sys.stderr, flush=True)
-                return content
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line or line == "data: [DONE]":
+                        continue
+                    if line.startswith("data: "):
+                        try:
+                            chunk = json.loads(line[6:])
+                            delta = chunk["choices"][0]["delta"].get("content", "")
+                            if delta:
+                                accumulated += delta
+                                thinking_buffer += delta
 
-            print(f"[WARN] No content in response: {json.dumps(data)[:400]}", file=sys.stderr, flush=True)
-            await asyncio.sleep(2 * (attempt + 1))
+                                now = asyncio.get_event_loop().time()
+                                if queue and task_id and (now - last_think_emit) > 0.15 and len(thinking_buffer) >= 20:
+                                    await queue.put({
+                                        "type": "thinking",
+                                        "text": accumulated,
+                                        "url": current_url,
+                                        "timestamp": datetime.now().isoformat(),
+                                    })
+                                    thinking_buffer = ""
+                                    last_think_emit = now
+                        except Exception:
+                            pass
+
+            if accumulated:
+                print(f"[LLM] Got response ({len(accumulated)} chars)", file=sys.stderr, flush=True)
+                return accumulated
+
+            print(f"[WARN] No content in streamed response", file=sys.stderr, flush=True)
+            await asyncio.sleep(1 * (attempt + 1))
 
         except DailyLimitExceeded:
             raise
@@ -1035,7 +1066,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
 
             # Ask LLM — auto-fallback to FALLBACK_MODEL if daily limit is exhausted
             try:
-                raw_response = await _ask_llm(api_key, model, _strip_images(messages))
+                raw_response = await _ask_llm(api_key, model, _strip_images(messages), queue=queue, task_id=task_id, current_url=current_url)
             except DailyLimitExceeded as e:
                 # Try each fallback model in order
                 switched = False
@@ -1055,7 +1086,7 @@ async def _run_agent(task_id: str, task: str, model: str, api_key: str, queue: a
                             "timestamp": datetime.now().isoformat(),
                         })
                         try:
-                            raw_response = await _ask_llm(api_key, model, _strip_images(messages))
+                            raw_response = await _ask_llm(api_key, model, _strip_images(messages), queue=queue, task_id=task_id, current_url=current_url)
                             switched = True
                             break
                         except DailyLimitExceeded:

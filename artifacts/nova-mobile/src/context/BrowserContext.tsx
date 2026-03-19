@@ -4,7 +4,7 @@ export type TaskStatus = "running" | "completed" | "failed";
 
 export type EventType =
   | "connected" | "started" | "step" | "done"
-  | "error" | "ping" | "stream_end" | "human_input_required";
+  | "error" | "ping" | "stream_end" | "human_input_required" | "thinking";
 
 export interface AgentEvent {
   type: EventType;
@@ -18,6 +18,7 @@ export interface AgentEvent {
   message?: string;
   question?: string;
   timestamp?: string;
+  text?: string;
 }
 
 export interface BrowserTask {
@@ -31,6 +32,7 @@ export interface BrowserTask {
   currentStep?: number;
   waitingForHuman?: boolean;
   humanQuestion?: string;
+  thinkingText?: string;
 }
 
 interface BrowserContextValue {
@@ -123,7 +125,8 @@ export function BrowserProvider({ children }: { children: React.ReactNode }) {
         const event: AgentEvent = JSON.parse(e.data);
         setTask((prev) => {
           if (!prev) return prev;
-          const events = event.type === "ping" ? prev.events : [...prev.events, event];
+          const isThinking = event.type === "thinking";
+          const events = (event.type === "ping" || isThinking) ? prev.events : [...prev.events, event];
           let status = prev.status;
           let latestScreenshot = prev.latestScreenshot;
           let currentAction = prev.currentAction;
@@ -132,7 +135,14 @@ export function BrowserProvider({ children }: { children: React.ReactNode }) {
           let currentStep = prev.currentStep;
           let waitingForHuman = prev.waitingForHuman;
           let humanQuestion = prev.humanQuestion;
+          let thinkingText = prev.thinkingText;
 
+          if (isThinking) {
+            thinkingText = event.text ?? "";
+            return { ...prev, thinkingText, currentUrl: event.url ?? prev.currentUrl };
+          }
+
+          thinkingText = undefined;
           if (event.screenshot) latestScreenshot = event.screenshot;
           if (event.action) currentAction = event.action;
           if (event.thought) currentThought = event.thought;
@@ -159,7 +169,7 @@ export function BrowserProvider({ children }: { children: React.ReactNode }) {
 
           return {
             ...prev, events, status, latestScreenshot, currentAction,
-            currentThought, currentUrl, currentStep, waitingForHuman, humanQuestion,
+            currentThought, currentUrl, currentStep, waitingForHuman, humanQuestion, thinkingText,
           };
         });
 

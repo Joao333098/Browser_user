@@ -5,7 +5,7 @@ import { useBrowser } from "@/context/BrowserContext";
 
 const MODELS = [
   { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B" },
-  { id: "llama-3.1-8b-instant", label: "Llama 3.1 8B" },
+  { id: "llama-3.1-8b-instant", label: "Llama 3.1 8B (Rápido)" },
   { id: "mixtral-8x7b-32768", label: "Mixtral 8x7B" },
 ];
 
@@ -109,9 +109,9 @@ function MessageBubble({ msg, onCommand }: { msg: Message; onCommand: (c: Parsed
   );
 }
 
-function TypingIndicator() {
+function StreamingBubble({ content }: { content: string }) {
   return (
-    <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
+    <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
       <div
         style={{
           width: 30,
@@ -123,33 +123,43 @@ function TypingIndicator() {
           alignItems: "center",
           justifyContent: "center",
           flexShrink: 0,
+          marginTop: 2,
         }}
       >
         <Sparkles size={14} color="rgba(255,255,255,0.7)" />
       </div>
       <div
         style={{
-          padding: "12px 16px",
+          maxWidth: "80%",
+          padding: "10px 14px",
           borderRadius: "18px 18px 18px 4px",
           background: "rgba(255,255,255,0.06)",
           border: "1px solid rgba(255,255,255,0.1)",
-          display: "flex",
-          gap: 4,
-          alignItems: "center",
+          color: "#f0f0f0",
+          fontSize: 15,
+          lineHeight: 1.5,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
         }}
       >
-        {[0, 150, 300].map((delay) => (
-          <div
-            key={delay}
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: "50%",
-              background: "rgba(255,255,255,0.5)",
-              animation: `bounce 1s ${delay}ms infinite`,
-            }}
-          />
-        ))}
+        {content || (
+          <span style={{ display: "flex", gap: 4, alignItems: "center", height: 22 }}>
+            {[0, 150, 300].map((delay) => (
+              <span
+                key={delay}
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: "rgba(255,255,255,0.5)",
+                  display: "inline-block",
+                  animation: `bounce 1s ${delay}ms infinite`,
+                }}
+              />
+            ))}
+          </span>
+        )}
+        {content && <span style={{ opacity: 0.7, animation: "blink 1s infinite" }}>▍</span>}
       </div>
     </div>
   );
@@ -184,11 +194,11 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
 
   const handleCommand = useCallback((cmd: ParsedCommand) => {
     if (cmd.type === "stop") stopTask();
-    if (cmd.type === "new_task" && cmd.param) runTask(cmd.param, "llama-3.3-70b-versatile");
+    if (cmd.type === "new_task" && cmd.param) runTask(cmd.param, "llama-3.1-8b-instant");
     if (cmd.type === "respond" && cmd.param) respondToHuman(cmd.param);
   }, [stopTask, runTask, respondToHuman]);
 
-  const { messages, model, setModel, systemPrompt, setSystemPrompt, isTyping, sendMessage, clearChat } =
+  const { messages, model, setModel, systemPrompt, setSystemPrompt, isTyping, streamingContent, sendMessage, clearChat } =
     useChatSession({
       browserContextForPrompt: task ? buildBrowserContext : undefined,
       onCommand: handleCommand,
@@ -196,7 +206,7 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
 
   useEffect(() => {
     messagesBottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isTyping]);
+  }, [messages, isTyping, streamingContent]);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -215,7 +225,6 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#0a0a0a" }}>
-      {/* Sub-header: model + settings */}
       <div
         style={{
           display: "flex",
@@ -279,7 +288,6 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
         </div>
       </div>
 
-      {/* Settings panel */}
       {showSettings && (
         <div
           style={{
@@ -314,7 +322,6 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
         </div>
       )}
 
-      {/* Browser status banner */}
       {task && (
         <button
           onClick={onSwitchToBrowser}
@@ -344,7 +351,6 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
         </button>
       )}
 
-      {/* Messages area */}
       <div
         style={{
           flex: 1,
@@ -354,7 +360,7 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
           scrollbarWidth: "none",
         }}
       >
-        {messages.length === 0 ? (
+        {messages.length === 0 && !isTyping ? (
           <div
             style={{
               display: "flex",
@@ -416,13 +422,12 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
             {messages.map((msg) => (
               <MessageBubble key={msg.id} msg={msg} onCommand={handleCommand} />
             ))}
-            {isTyping && <TypingIndicator />}
+            {isTyping && <StreamingBubble content={streamingContent} />}
             <div ref={messagesBottomRef} />
           </div>
         )}
       </div>
 
-      {/* Input area */}
       <div
         style={{
           flexShrink: 0,
@@ -500,6 +505,10 @@ Se não entender o pedido, explique o que você pode fazer. Responda no mesmo id
         @keyframes bounce {
           0%, 100% { transform: translateY(0); opacity: 0.4; }
           50% { transform: translateY(-4px); opacity: 1; }
+        }
+        @keyframes blink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0; }
         }
         textarea::-webkit-scrollbar { display: none; }
       `}</style>
