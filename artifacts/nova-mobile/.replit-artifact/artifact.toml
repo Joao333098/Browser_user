@@ -10,7 +10,7 @@ name = "react-vite"
 version = "1.0.0"
 
 [[services]]
-localPort = 23870
+localPort = 23843
 name = "web"
 paths = ["/mobile/"]
 
@@ -18,7 +18,7 @@ paths = ["/mobile/"]
 run = "pnpm --filter @workspace/nova-mobile run dev"
 
 [services.env]
-PORT = "23870"
+PORT = "23843"
 BASE_PATH = "/mobile/"
 
 [services.production]
